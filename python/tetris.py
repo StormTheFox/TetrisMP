@@ -1,7 +1,23 @@
 import pygame, random, copy, time, threading
 from queue import Queue, Empty
 from config import *
-from cuslib import Log
+from rich.console import Console
+
+console = Console()
+
+class Log:
+    @staticmethod
+    def info(msg: str, timestamp: bool = True, **kwargs):
+        console.print(f"[cyan]INFO[/cyan]: {msg}")
+    @staticmethod
+    def error(msg: str, timestamp: bool = True, **kwargs):
+        console.print(f"[red]ERROR[/red]: {msg}")
+    @staticmethod
+    def warning(msg: str, timestamp: bool = True, **kwargs):
+        console.print(f"[yellow]WARNING[/yellow]: {msg}")
+    @staticmethod
+    def debug(msg: str, timestamp: bool = True, **kwargs):
+        console.print(f"[green]DEBUG[/green]: {msg}")
 
 class Piece:
     def __init__(self, shape_name, color):
@@ -85,7 +101,6 @@ class BaseAI:
         self._compute_thread = None
         self._is_computing = False
         self._precompute_rotations()
-        # Базовые веса (можно переопределить)
         self.weights = {
             'height': -0.510066, 'lines': 0.760666,
             'holes': -0.356630, 'bumpiness': -0.184483,
@@ -129,12 +144,10 @@ class BaseAI:
         return y - 1
 
     def evaluate(self, shape, x, drop_y, grid, width, height):
-        """Базовая оценка позиции. Переопределяется в QwenAI."""
         sim_grid = [row[:] for row in grid]
         for r, row in enumerate(shape):
             for c, val in enumerate(row):
                 if val: sim_grid[drop_y + r][x + c] = 1
-
         heights, holes, lines, bumpiness = [0]*width, 0, 0, 0
         for col in range(width):
             h = 0
@@ -145,29 +158,25 @@ class BaseAI:
             for row in range(height):
                 if sim_grid[row][col] is not None: found = True
                 elif found: holes += 1
-
         for row in range(height):
             if all(sim_grid[row][col] is not None for col in range(width)): lines += 1
         for col in range(width - 1): bumpiness += abs(heights[col] - heights[col+1])
-
         return (self.weights['height'] * (sum(heights)/width) +
                 self.weights['lines'] * lines +
                 self.weights['holes'] * holes +
                 self.weights['bumpiness'] * bumpiness)
 
     def _compute_in_background(self, state):
-        t0 = time.time()  # 🔑 ОБЯЗАТЕЛЬНО определяем ДО try
+        t0 = time.time()
         try:
             candidates = [('current', state['curr_shape'], False)]
             if not state['hold_used']:
-                if state['hold_shape']: 
+                if state['hold_shape']:
                     candidates.append(('hold', state['hold_shape'], True))
-                elif len(state['next_shapes']) > 0: 
+                elif len(state['next_shapes']) > 0:
                     candidates.append(('next', state['next_shapes'][0], True))
-
             best_score, best_plan = float('-inf'), None
             w, h, grid = state['width'], state['height'], state['grid']
-
             for src, shape_name, use_hold in candidates:
                 for rot_idx, shape in enumerate(self.rotations[shape_name]):
                     sw = len(shape[0])
@@ -179,11 +188,9 @@ class BaseAI:
                         score = self.evaluate(shape, x, y, grid, w, h)
                         if score > best_score:
                             best_score, best_plan = score, (use_hold, x, rot_idx)
-            
             elapsed = (time.time() - t0) * 1000
             Log.debug(f"🧠 ИИ (Игрок {self.player.id}): просчёт за {elapsed:.1f}мс | Score: {best_score:.2f} | План: {best_plan}")
             self._result_queue.put(best_plan)
-            
         except Exception as e:
             elapsed = (time.time() - t0) * 1000
             Log.error(f"🧠 ИИ (Игрок {self.player.id}): краш потока за {elapsed:.1f}мс -> {e}")
@@ -191,7 +198,7 @@ class BaseAI:
 
     def _generate_actions(self, plan):
         if plan is None:
-            if not hasattr(self, '_warned_none'): 
+            if not hasattr(self, '_warned_none'):
                 Log.warning(f"⚠️ ИИ (Игрок {self.player.id}): план не найден, экстренный hard_drop")
                 self._warned_none = True
             self.action_queue.append('hard_drop')
@@ -232,59 +239,36 @@ class BaseAI:
             self._compute_thread.start()
         return None
 
-class DeepSeekAI_v1(BaseAI): ## Version 1
-    """
-    Улучшенный AI с акцентом на выживание и избегание дыр.
-    Веса подобраны так, чтобы не строить столбы.
-    """
+class DeepSeekAI_v1(BaseAI):
     def __init__(self, player, config=None):
         super().__init__(player, config)
-        # Критически важные веса: избегаем высоты и дыр любой ценой
         self.weights = {
-            'aggregate_height': -0.85,   # очень большой штраф за общую высоту
-            'lines': 0.55,               # умеренный бонус за линии (не в ущерб выживанию)
-            'holes': -1.20,              # огромный штраф за дыры
-            'bumpiness': -0.30,          # штраф за неровность
-            'well_depth': -0.40,         # штраф за глубокие ямы
-            'max_height': -0.70,         # штраф за самый высокий столбец (предотвращает "башню")
-            'hole_penalty_factor': 2.0   # дополнительный множитель для дыр
+            'aggregate_height': -0.85, 'lines': 0.55, 'holes': -1.20,
+            'bumpiness': -0.30, 'well_depth': -0.40, 'max_height': -0.70, 'hole_penalty_factor': 2.0
         }
 
     def evaluate(self, shape, x, drop_y, grid, width, height):
-        """
-        Оценка позиции после размещения фигуры.
-        Возвращает число: чем выше, тем лучше.
-        """
-        # Создаём копию поля и размещаем фигуру
         sim = [row[:] for row in grid]
         for r, row in enumerate(shape):
             for c, val in enumerate(row):
                 if val and (drop_y + r) < height:
-                    sim[drop_y + r][x + c] = 1  # цвет не важен, только факт заполнения
-
-        # Очищаем заполненные линии (это влияет на последующую оценку)
+                    sim[drop_y + r][x + c] = 1
         lines_cleared = 0
         row = height - 1
         while row >= 0:
             if all(sim[row][col] is not None for col in range(width)):
-                # удаляем линию
                 for rr in range(row, 0, -1):
                     sim[rr] = sim[rr-1][:]
                 sim[0] = [None] * width
                 lines_cleared += 1
-                # не увеличиваем row, т.к. следующая строка сместилась вниз
             else:
                 row -= 1
-
-        # Вычисляем метрики
         heights = [0] * width
         holes = 0
         max_h = 0
         bumpiness = 0
         well_depth = 0
-
         for col in range(width):
-            # высота столбца (расстояние от верха до первого блока)
             h = 0
             for r in range(height):
                 if sim[r][col] is not None:
@@ -292,64 +276,41 @@ class DeepSeekAI_v1(BaseAI): ## Version 1
                     break
             heights[col] = h
             max_h = max(max_h, h)
-
-            # дыры (пустые клетки под блоком)
             found_block = False
             for r in range(height):
                 if sim[r][col] is not None:
                     found_block = True
                 elif found_block:
                     holes += 1
-
-        # перепады высот между соседними столбцами
         for col in range(width - 1):
             bumpiness += abs(heights[col] - heights[col+1])
-
-        # глубина колодцев (впадина между двумя высокими столбцами)
         for col in range(1, width - 1):
             if heights[col] < heights[col-1] and heights[col] < heights[col+1]:
                 well_depth += min(heights[col-1], heights[col+1]) - heights[col]
-
         aggregate_height = sum(heights)
-
-        # Итоговая оценка: все штрафы отрицательные, бонус положительный
         score = (self.weights['aggregate_height'] * aggregate_height +
                  self.weights['lines'] * lines_cleared +
                  self.weights['holes'] * holes * self.weights['hole_penalty_factor'] +
                  self.weights['bumpiness'] * bumpiness +
                  self.weights['well_depth'] * well_depth +
                  self.weights['max_height'] * max_h)
-
-        # Дополнительный штраф, если максимальная высота превышает половину поля — паника
         if max_h > height // 2:
             score -= 50 * (max_h - height // 2)
-
         return score
 
     def _get_best_placement(self, shape_name, grid, width, height, hold_used, hold_shape, next_shape):
-        """
-        Возвращает лучший (use_hold, x, rot) для данной фигуры.
-        Если использование hold даёт лучший результат, возвращает (True, ...).
-        """
         best_score = -float('inf')
-        best_plan = (False, 0, 0)  # по умолчанию не использовать hold
-
-        # Вариант 1: не использовать hold, играем текущей фигурой
+        best_plan = (False, 0, 0)
         rotations = self.rotations[shape_name]
         for rot_idx, shape in enumerate(rotations):
             sw = len(shape[0])
-            if sw > width:
-                continue
+            if sw > width: continue
             min_x = max(0, -(sw - 1))
             max_x = min(width - 1, width - sw)
             for x in range(min_x, max_x + 1):
                 y = self._fast_drop(shape, grid, width, height, x)
-                if y < 0:
-                    continue
+                if y < 0: continue
                 score = self.evaluate(shape, x, y, grid, width, height)
-
-                # Учитываем следующую фигуру: если следующая фигура хорошо ляжет на то же место,
-                # даём небольшой бонус (предвидение)
                 if next_shape:
                     next_rotations = self.rotations[next_shape]
                     best_next = -float('inf')
@@ -361,19 +322,12 @@ class DeepSeekAI_v1(BaseAI): ## Version 1
                         for nx in range(min_nx, max_nx + 1):
                             ny = self._fast_drop(nshape, grid, width, height, nx)
                             if ny < 0: continue
-                            # Оцениваем позицию после текущего хода, но на том же поле (без очистки линий – грубо)
-                            # Для скорости используем текущую сетку grid (можно и улучшить, но достаточно)
                             s = self.evaluate(nshape, nx, ny, grid, width, height)
-                            if s > best_next:
-                                best_next = s
-                    if best_next > -float('inf'):
-                        score += 0.3 * best_next  # небольшая добавка за хорошую совместимость
-
+                            if s > best_next: best_next = s
+                    if best_next > -float('inf'): score += 0.3 * best_next
                 if score > best_score:
                     best_score = score
                     best_plan = (False, x, rot_idx)
-
-        # Вариант 2: используем hold (если доступно)
         if not hold_used and hold_shape:
             hold_rotations = self.rotations[hold_shape]
             for rot_idx, shape in enumerate(hold_rotations):
@@ -384,10 +338,8 @@ class DeepSeekAI_v1(BaseAI): ## Version 1
                 for x in range(min_x, max_x + 1):
                     y = self._fast_drop(shape, grid, width, height, x)
                     if y < 0: continue
-                    # Оцениваем позицию от фигуры из hold
                     score = self.evaluate(shape, x, y, grid, width, height)
                     if next_shape:
-                        # Аналогичный бонус за следующую фигуру
                         next_rotations = self.rotations[next_shape]
                         best_next = -float('inf')
                         for nrot, nshape in enumerate(next_rotations):
@@ -399,20 +351,14 @@ class DeepSeekAI_v1(BaseAI): ## Version 1
                                 ny = self._fast_drop(nshape, grid, width, height, nx)
                                 if ny < 0: continue
                                 s = self.evaluate(nshape, nx, ny, grid, width, height)
-                                if s > best_next:
-                                    best_next = s
-                        if best_next > -float('inf'):
-                            score += 0.3 * best_next
+                                if s > best_next: best_next = s
+                        if best_next > -float('inf'): score += 0.3 * best_next
                     if score > best_score:
                         best_score = score
                         best_plan = (True, x, rot_idx)
-
         return best_plan
 
     def _compute_in_background(self, state):
-        """
-        Асинхронный поиск лучшего действия.
-        """
         try:
             grid = state['grid']
             width = state['width']
@@ -421,36 +367,25 @@ class DeepSeekAI_v1(BaseAI): ## Version 1
             hold_shape = state['hold_shape']
             hold_used = state['hold_used']
             next_shape = state['next_shapes'][0] if state['next_shapes'] else None
-
-            best_plan = self._get_best_placement(curr_shape, grid, width, height,
-                                                 hold_used, hold_shape, next_shape)
+            best_plan = self._get_best_placement(curr_shape, grid, width, height, hold_used, hold_shape, next_shape)
             self._result_queue.put(best_plan)
         except Exception:
             self._result_queue.put(None)
 
-class DeepSeekAIv2(BaseAI): ## Version 2
-    """Продвинутый AI с глубокой оценкой и предсказанием на 1 ход вперёд."""
+class DeepSeekAIv2(BaseAI):
     def __init__(self, player, config=None):
         super().__init__(player, config)
         self.weights = {
-            'aggregate_height': -0.78,
-            'lines': 0.65,
-            'holes': -1.35,
-            'bumpiness': -0.42,
-            'well_depth': -0.60,
-            'max_height': -0.85,
-            'erosion': 0.50,
+            'aggregate_height': -0.78, 'lines': 0.65, 'holes': -1.35,
+            'bumpiness': -0.42, 'well_depth': -0.60, 'max_height': -0.85, 'erosion': 0.50,
         }
 
     def _evaluate_position(self, shape, x, y, grid, width, height):
-        """Улучшенная оценка позиции после размещения фигуры."""
         sim = [row[:] for row in grid]
         for r, row in enumerate(shape):
             for c, val in enumerate(row):
                 if val and y + r < height:
                     sim[y + r][x + c] = 1
-
-        # Очистка линий (эрозия)
         lines_cleared = 0
         row = height - 1
         while row >= 0:
@@ -461,13 +396,11 @@ class DeepSeekAIv2(BaseAI): ## Version 2
                 lines_cleared += 1
             else:
                 row -= 1
-
         heights = [0] * width
         holes = 0
         max_h = 0
         bumpiness = 0
         well_depth = 0
-
         for col in range(width):
             h = 0
             for r in range(height):
@@ -476,28 +409,19 @@ class DeepSeekAIv2(BaseAI): ## Version 2
                     break
             heights[col] = h
             max_h = max(max_h, h)
-
             found = False
             for r in range(height):
-                if sim[r][col] is not None:
-                    found = True
-                elif found:
-                    holes += 1
-
+                if sim[r][col] is not None: found = True
+                elif found: holes += 1
         for col in range(width - 1):
             bumpiness += abs(heights[col] - heights[col+1])
-
         for col in range(1, width - 1):
             if heights[col] < heights[col-1] and heights[col] < heights[col+1]:
                 well_depth += min(heights[col-1], heights[col+1]) - heights[col]
-
         agg_height = sum(heights)
-
-        # Паника при высоком столбце
         panic_penalty = 0
         if max_h > height * 0.6:
             panic_penalty = -50 * (max_h - height * 0.6)
-
         score = (self.weights['aggregate_height'] * agg_height +
                  self.weights['lines'] * lines_cleared +
                  self.weights['holes'] * holes +
@@ -516,11 +440,8 @@ class DeepSeekAIv2(BaseAI): ## Version 2
             hold_shape = state['hold_shape']
             hold_used = state['hold_used']
             next_shape = state['next_shapes'][0] if state['next_shapes'] else None
-
             best_score = -float('inf')
             best_plan = (False, 0, 0)
-
-            # Проверяем текущую фигуру
             for rot_idx, shape in enumerate(self.rotations[curr_shape]):
                 sw = len(shape[0])
                 if sw > w: continue
@@ -530,17 +451,12 @@ class DeepSeekAIv2(BaseAI): ## Version 2
                     y = self._fast_drop(shape, grid, w, h, x)
                     if y < 0: continue
                     score = self._evaluate_position(shape, x, y, grid, w, h)
-                    
-                    # Бонус за совместимость со следующей фигурой
                     if next_shape:
                         next_bonus = self._estimate_next_fit(shape, x, y, next_shape, grid, w, h)
                         score += 0.25 * next_bonus
-                    
                     if score > best_score:
                         best_score = score
                         best_plan = (False, x, rot_idx)
-
-            # Hold используем только если это даёт значительное улучшение (>15%)
             if not hold_used and hold_shape:
                 for rot_idx, shape in enumerate(self.rotations[hold_shape]):
                     sw = len(shape[0])
@@ -554,22 +470,19 @@ class DeepSeekAIv2(BaseAI): ## Version 2
                         if next_shape:
                             next_bonus = self._estimate_next_fit(shape, x, y, next_shape, grid, w, h)
                             score += 0.25 * next_bonus
-                        if score > best_score * 1.15:  # Только если значительно лучше
+                        if score > best_score * 1.15:
                             best_score = score
                             best_plan = (True, x, rot_idx)
-
             self._result_queue.put(best_plan)
         except Exception:
             self._result_queue.put(None)
 
     def _estimate_next_fit(self, shape, x, y, next_shape, grid, w, h):
-        """Оценивает, насколько хорошо следующая фигура ляжет на это же поле."""
         sim = [row[:] for row in grid]
         for r, row in enumerate(shape):
             for c, val in enumerate(row):
                 if val and y + r < h:
                     sim[y + r][x + c] = 1
-        # Очищаем линии
         row = h - 1
         while row >= 0:
             if all(sim[row][col] is not None for col in range(w)):
@@ -578,7 +491,6 @@ class DeepSeekAIv2(BaseAI): ## Version 2
                 sim[0] = [None] * w
             else:
                 row -= 1
-        # Оцениваем лучшую позицию для следующей фигуры
         best = -float('inf')
         for rot_idx, nshape in enumerate(self.rotations[next_shape]):
             sw = len(nshape[0])
@@ -589,36 +501,25 @@ class DeepSeekAIv2(BaseAI): ## Version 2
                 ny = self._fast_drop(nshape, sim, w, h, nx)
                 if ny < 0: continue
                 s = self._evaluate_position(nshape, nx, ny, sim, w, h)
-                if s > best:
-                    best = s
+                if s > best: best = s
         return best if best != -float('inf') else 0
 
-class DeepSeekAI(BaseAI):  # Version 2 – с даунстакингом
-    """Продвинутый AI с глубокой оценкой и приоритетом даунстакинга."""
+class DeepSeekAI(BaseAI):
     def __init__(self, player, config=None):
         super().__init__(player, config)
         self.weights = {
-            'aggregate_height': -0.78,
-            'lines': 0.65,
-            'holes': -1.35,
-            'bumpiness': -0.42,
-            'well_depth': -0.60,
-            'max_height': -0.85,
-            'erosion': 0.50,
-            'downstack_bonus': 2.0,      # бонус за закрытие дыр
-            'smoothness_bonus': 0.8,     # бонус за сглаживание перепадов
-            'well_fill_bonus': 1.2,      # бонус за заполнение колодца
+            'aggregate_height': -0.78, 'lines': 0.65, 'holes': -1.35,
+            'bumpiness': -0.42, 'well_depth': -0.60, 'max_height': -0.85, 'erosion': 0.50,
+            'downstack_bonus': 2.0, 'smoothness_bonus': 0.8, 'well_fill_bonus': 1.2,
         }
         self._panic_mode = False
 
     def _compute_metrics(self, grid, width, height):
-        """Вычисляет основные метрики поля: высоты, дыры, bumpiness, well_depth."""
         heights = [0] * width
         holes = 0
         max_h = 0
         bumpiness = 0
         well_depth = 0
-
         for col in range(width):
             h = 0
             for r in range(height):
@@ -627,39 +528,24 @@ class DeepSeekAI(BaseAI):  # Version 2 – с даунстакингом
                     break
             heights[col] = h
             max_h = max(max_h, h)
-
             found = False
             for r in range(height):
-                if grid[r][col] is not None:
-                    found = True
-                elif found:
-                    holes += 1
-
+                if grid[r][col] is not None: found = True
+                elif found: holes += 1
         for col in range(width - 1):
             bumpiness += abs(heights[col] - heights[col+1])
-
         for col in range(1, width - 1):
             if heights[col] < heights[col-1] and heights[col] < heights[col+1]:
                 well_depth += min(heights[col-1], heights[col+1]) - heights[col]
-
         return heights, holes, max_h, bumpiness, well_depth
 
     def _evaluate_position(self, shape, x, y, grid, width, height):
-        """
-        Улучшенная оценка позиции с учётом даунстакинга.
-        Возвращает число (чем больше, тем лучше).
-        """
-        # 1. Сохраняем исходное состояние для сравнения
         orig_grid = [row[:] for row in grid]
-
-        # 2. Размещаем фигуру
         sim = [row[:] for row in grid]
         for r, row in enumerate(shape):
             for c, val in enumerate(row):
                 if val and y + r < height:
                     sim[y + r][x + c] = 1
-
-        # 3. Очищаем полные линии (эрозия)
         lines_cleared = 0
         row = height - 1
         while row >= 0:
@@ -670,34 +556,23 @@ class DeepSeekAI(BaseAI):  # Version 2 – с даунстакингом
                 lines_cleared += 1
             else:
                 row -= 1
-
-        # 4. Считаем метрики ДО и ПОСЛЕ
         _, holes_before, max_h_before, bump_before, well_before = self._compute_metrics(orig_grid, width, height)
         heights_after, holes_after, max_h_after, bump_after, well_after = self._compute_metrics(sim, width, height)
-
-        # 5. Базовые штрафы/бонусы (как в оригинале)
         agg_height = sum(heights_after)
-
-        # 6. Бонусы за даунстакинг
-        holes_reduced = max(0, holes_before - holes_after)          # сколько дыр закрыто
-        bump_reduced = max(0, bump_before - bump_after)            # насколько сгладился рельеф
-        well_filled = max(0, well_before - well_after)             # насколько уменьшилась глубина колодца
-
+        holes_reduced = max(0, holes_before - holes_after)
+        bump_reduced = max(0, bump_before - bump_after)
+        well_filled = max(0, well_before - well_after)
         downstack_score = (
             self.weights['downstack_bonus'] * holes_reduced +
             self.weights['smoothness_bonus'] * bump_reduced +
             self.weights['well_fill_bonus'] * well_filled
         )
-
-        # 7. Паника при высокой заполненности
         panic_penalty = 0
         if max_h_after > height * 0.6:
             panic_penalty = -50 * (max_h_after - height * 0.6)
             self._panic_mode = True
         else:
             self._panic_mode = False
-
-        # 8. Итоговая оценка
         score = (
             self.weights['aggregate_height'] * agg_height +
             self.weights['lines'] * lines_cleared +
@@ -709,23 +584,16 @@ class DeepSeekAI(BaseAI):  # Version 2 – с даунстакингом
             downstack_score +
             panic_penalty
         )
-
-        # Если в панике – дополнительно поощряем закрытие дыр
         if self._panic_mode:
             score += 2.0 * holes_reduced
-
         return score
 
     def _estimate_next_fit(self, shape, x, y, next_shape, grid, w, h):
-        """Оценивает, насколько хорошо следующая фигура ляжет на поле после текущего хода."""
-        # Строим поле после текущей фигуры (без очистки линий, чтобы сохранить эффект)
         sim = [row[:] for row in grid]
         for r, row in enumerate(shape):
             for c, val in enumerate(row):
                 if val and y + r < h:
                     sim[y + r][x + c] = 1
-
-        # Очищаем линии (как в реальной игре)
         row = h - 1
         while row >= 0:
             if all(sim[row][col] is not None for col in range(w)):
@@ -734,25 +602,20 @@ class DeepSeekAI(BaseAI):  # Version 2 – с даунстакингом
                 sim[0] = [None] * w
             else:
                 row -= 1
-
         best = -float('inf')
         for rot_idx, nshape in enumerate(self.rotations[next_shape]):
             sw = len(nshape[0])
-            if sw > w:
-                continue
+            if sw > w: continue
             min_x = max(0, -(sw - 1))
             max_x = min(w - 1, w - sw)
             for nx in range(min_x, max_x + 1):
                 ny = self._fast_drop(nshape, sim, w, h, nx)
-                if ny < 0:
-                    continue
+                if ny < 0: continue
                 s = self._evaluate_position(nshape, nx, ny, sim, w, h)
-                if s > best:
-                    best = s
+                if s > best: best = s
         return best if best != -float('inf') else 0
 
     def _compute_in_background(self, state):
-        """Асинхронный поиск лучшего хода с учётом даунстакинга."""
         try:
             grid = state['grid']
             w, h = state['width'], state['height']
@@ -760,110 +623,61 @@ class DeepSeekAI(BaseAI):  # Version 2 – с даунстакингом
             hold_shape = state['hold_shape']
             hold_used = state['hold_used']
             next_shape = state['next_shapes'][0] if state['next_shapes'] else None
-
             best_score = -float('inf')
             best_plan = (False, 0, 0)
-
-            # 1. Оцениваем все варианты с текущей фигурой
             for rot_idx, shape in enumerate(self.rotations[curr_shape]):
                 sw = len(shape[0])
-                if sw > w:
-                    continue
+                if sw > w: continue
                 min_x = max(0, -(sw - 1))
                 max_x = min(w - 1, w - sw)
                 for x in range(min_x, max_x + 1):
                     y = self._fast_drop(shape, grid, w, h, x)
-                    if y < 0:
-                        continue
+                    if y < 0: continue
                     score = self._evaluate_position(shape, x, y, grid, w, h)
-
-                    # Бонус за совместимость со следующей фигурой (lookahead)
                     if next_shape:
                         next_bonus = self._estimate_next_fit(shape, x, y, next_shape, grid, w, h)
                         score += 0.25 * next_bonus
-
                     if score > best_score:
                         best_score = score
                         best_plan = (False, x, rot_idx)
-
-            # 2. Пробуем Hold (только если это даёт заметный выигрыш в даунстакинге)
             if not hold_used and hold_shape:
                 for rot_idx, shape in enumerate(self.rotations[hold_shape]):
                     sw = len(shape[0])
-                    if sw > w:
-                        continue
+                    if sw > w: continue
                     min_x = max(0, -(sw - 1))
                     max_x = min(w - 1, w - sw)
                     for x in range(min_x, max_x + 1):
                         y = self._fast_drop(shape, grid, w, h, x)
-                        if y < 0:
-                            continue
+                        if y < 0: continue
                         score = self._evaluate_position(shape, x, y, grid, w, h)
                         if next_shape:
                             next_bonus = self._estimate_next_fit(shape, x, y, next_shape, grid, w, h)
                             score += 0.25 * next_bonus
-
-                        # Используем hold только если он даёт улучшение >20%
                         if score > best_score * 1.20:
                             best_score = score
                             best_plan = (True, x, rot_idx)
-
             self._result_queue.put(best_plan)
         except Exception as e:
             Log.error(f"🧠 DeepSeekAI краш потока: {e}")
             self._result_queue.put(None)
 
 class QwenAI(BaseAI):
-    """
-    Улучшенный QwenAI:
-    - даунстэкинг;
-    - 1-piece lookahead;
-    - panic mode;
-    - безопасное выполнение плана;
-    - защита от устаревших потоков.
-    """
-
     def __init__(self, player, config=None):
         super().__init__(player, config)
-
         self.weights = {
-            # Базовая оценка поля
-            'height': -0.62,
-            'lines': 0.95,
-            'holes': -0.85,
-            'bumpiness': -0.24,
-            'well_depth': -0.18,
-            'max_height': -0.55,
-            'transitions': -0.006,
-
-            # Даунстэкинг: награда за улучшение поля
-            'downstack_holes': 2.4,
-            'downstack_bump': 0.35,
-            'downstack_well': 0.75,
-            'downstack_height': 0.07,
-            'downstack_max': 0.9,
-
-            # Штрафы за ухудшение
-            'create_hole_penalty': -0.75,
-            'height_added_penalty': -0.015,
-            'panic_height_penalty': -1.25,
-
-            # Режим паники
-            'panic_threshold': 0.62,
-
-            # Lookahead и служебные веса
-            'lookahead': 0.22,
-            'hold_cost': 0.08,
-            'top_n': 8
+            'height': -0.62, 'lines': 0.95, 'holes': -0.85, 'bumpiness': -0.24,
+            'well_depth': -0.18, 'max_height': -0.55, 'transitions': -0.006,
+            'downstack_holes': 2.4, 'downstack_bump': 0.35, 'downstack_well': 0.75,
+            'downstack_height': 0.07, 'downstack_max': 0.9, 'create_hole_penalty': -0.75,
+            'height_added_penalty': -0.015, 'panic_height_penalty': -1.25,
+            'panic_threshold': 0.62, 'lookahead': 0.22, 'hold_cost': 0.08, 'top_n': 8
         }
-
         if isinstance(config, dict):
             cfg = config.get('weights', config)
             if isinstance(cfg, dict):
                 for k, v in cfg.items():
                     if k in self.weights:
                         self.weights[k] = v
-
         self._last_board_hash = None
         self._target_plan = None
         self._panic_mode = False
@@ -884,8 +698,6 @@ class QwenAI(BaseAI):
 
     def get_action(self):
         current_hash = self._hash_board()
-
-        # Если поле изменилось, старые планы больше не актуальны
         if self._last_board_hash != current_hash:
             self._last_board_hash = current_hash
             self._generation += 1
@@ -894,42 +706,30 @@ class QwenAI(BaseAI):
             self._is_computing = False
             self._target_plan = None
             self._plan_hold_done = False
-
         if self.action_queue:
             return self.action_queue.pop(0)
-
-        # Обрабатываем результаты фонового потока
         while True:
             try:
                 item = self._result_queue.get_nowait()
             except Empty:
                 break
-
             try:
                 gen, plan = item
             except Exception:
                 continue
-
-            # Игнорируем устаревшие результаты
             if gen != self._generation:
                 continue
-
             self._is_computing = False
-
             if plan is None:
                 self._target_plan = None
                 self._plan_hold_done = False
                 self.action_queue.append('hard_drop')
                 return self.action_queue.pop(0)
-
             self._target_plan = plan
             self._plan_hold_done = False
             break
-
         if self.action_queue:
             return self.action_queue.pop(0)
-
-        # Запускаем новый расчёт только если сейчас нет активного плана
         if self._target_plan is None and not self._is_computing:
             self._is_computing = True
             state = self._capture_state()
@@ -938,20 +738,13 @@ class QwenAI(BaseAI):
                 args=(state, self._generation),
                 daemon=True
             ).start()
-
         return self._fallback_action()
 
     def _fallback_action(self):
-        """
-        Безопасное выполнение плана по одному действию за кадр.
-        План: (use_hold, shape_name, target_x, target_rot, target_y)
-        """
         plan = self._target_plan
         player = self.player
-
         if plan is None or player is None or not player.alive or player.current_piece is None:
             return None
-
         try:
             use_hold, shape_name, target_x, target_rot, target_y = plan
         except ValueError:
@@ -960,71 +753,45 @@ class QwenAI(BaseAI):
                 target_y = None
             except Exception:
                 return 'hard_drop'
-
         curr = player.current_piece
-
-        # Если план требует hold, сначала делаем hold
         if use_hold and not player.hold_used and not self._plan_hold_done:
             self._plan_hold_done = True
             return 'hold'
-
-        # Если hold должен был случиться, но не случился, не зависаем
         if use_hold and not player.hold_used and self._plan_hold_done:
             return 'hard_drop'
-
-        # Если фигура уже не та, план устарел или что-то пошло не так
         if curr.shape_name != shape_name:
             return 'hard_drop'
-
-        # Поворот
         if curr.rotation != target_rot:
             if self._can_rotate(curr):
                 return 'rotate'
-
-            # Иногда повернуть получается только после небольшого спуска
             if target_y is not None and curr.y < target_y and self._can_move(curr, 0, 1):
                 return 'soft_drop'
-
             return 'hard_drop'
-
-        # Движение вправо
         if curr.x < target_x:
             if self._can_move(curr, 1, 0):
                 return 'right'
-
-            # Если по горизонтали не проходим, пробуем спуститься
             if target_y is not None and curr.y < target_y and self._can_move(curr, 0, 1):
                 return 'soft_drop'
-
             return 'hard_drop'
-
-        # Движение влево
         if curr.x > target_x:
             if self._can_move(curr, -1, 0):
                 return 'left'
-
             if target_y is not None and curr.y < target_y and self._can_move(curr, 0, 1):
                 return 'soft_drop'
-
             return 'hard_drop'
-
-        # Если позиция достигнута, роняем фигуру
         return 'hard_drop'
 
     def _can_rotate(self, piece):
         board = self.player.board
         test = copy.deepcopy(piece)
         test.rotate()
-
         if board.is_valid_position(test):
             return True
-
         for dx in (-1, 1, -2, 2):
             test.move(dx, 0)
             if board.is_valid_position(test):
                 return True
             test.move(-dx, 0)
-
         return False
 
     def _can_move(self, piece, dx, dy=0):
@@ -1045,224 +812,159 @@ class QwenAI(BaseAI):
         w = state['width']
         h = state['height']
         grid = state['grid']
-
         rows = self._grid_to_masks(grid, w, h)
         before_metrics = self._compute_metrics(rows, w, h)
-
         curr_shape = state['curr_shape']
         hold_shape = state['hold_shape']
         hold_used = state['hold_used']
         next_shapes = state.get('next_shapes') or []
-
         if not curr_shape:
             return None
-
         candidates = [(False, curr_shape)]
-
         if not hold_used:
             if hold_shape:
                 candidates.append((True, hold_shape))
             elif next_shapes:
                 candidates.append((True, next_shapes[0]))
-
         initial = []
-
         for use_hold, shape_name in candidates:
             if not shape_name:
                 continue
-
             rot_data = self._get_rot_data(shape_name)
-
             for rot_idx, (masks, sw, sh) in enumerate(rot_data):
                 if sw <= 0 or sh <= 0 or sw > w or sh > h:
                     continue
-
                 for x in range(0, w - sw + 1):
                     y = self._fast_drop_mask(masks, sw, sh, rows, w, h, x)
                     if y < 0:
                         continue
-
                     after_rows, lines = self._apply_and_clear(rows, masks, x, y, w, h)
                     after_metrics = self._compute_metrics(after_rows, w, h)
                     score = self._score_metrics(before_metrics, after_metrics, lines, w, h)
-
-                    # Небольшой штраф за использование hold, чтобы не тратить его без нужды
                     if use_hold:
                         score -= float(self.weights.get('hold_cost', 0.08))
-
                     initial.append((
-                        score,
-                        use_hold,
-                        shape_name,
-                        x,
-                        rot_idx,
-                        y,
-                        after_rows,
-                        after_metrics
+                        score, use_hold, shape_name, x, rot_idx, y, after_rows, after_metrics
                     ))
-
         if not initial:
             return None
-
         initial.sort(key=lambda item: item[0], reverse=True)
-
         try:
             top_n = max(1, int(self.weights.get('top_n', 8)))
         except Exception:
             top_n = 8
-
         best_score = -float('inf')
         best_plan = None
-
         for score, use_hold, shape_name, x, rot_idx, y, after_rows, after_metrics in initial[:top_n]:
             next_name = self._get_lookahead_shape(use_hold, hold_shape, next_shapes)
-
             if next_name:
                 next_score = self._best_future_score(next_name, after_rows, after_metrics, w, h)
                 score += float(self.weights.get('lookahead', 0.22)) * next_score
-
             if score > best_score:
                 best_score = score
                 best_plan = (use_hold, shape_name, x, rot_idx, y)
-
         return best_plan
 
     def _get_lookahead_shape(self, use_hold, hold_shape, next_shapes):
-        """
-        Возвращает фигуру, которую нужно оценивать как следующую.
-        Если hold пуст и мы его используем, активной станет next_shapes[0],
-        а следующей после неё уже next_shapes[1].
-        """
         if not use_hold:
             return next_shapes[0] if next_shapes else None
-
         if hold_shape:
             return next_shapes[0] if next_shapes else None
-
         return next_shapes[1] if len(next_shapes) > 1 else None
 
     def _best_future_score(self, shape_name, rows, before_metrics, width, height):
         best = -float('inf')
-
         for masks, sw, sh in self._get_rot_data(shape_name):
             if sw <= 0 or sh <= 0 or sw > width or sh > height:
                 continue
-
             for x in range(0, width - sw + 1):
                 y = self._fast_drop_mask(masks, sw, sh, rows, width, height, x)
                 if y < 0:
                     continue
-
                 after_rows, lines = self._apply_and_clear(rows, masks, x, y, width, height)
                 after_metrics = self._compute_metrics(after_rows, width, height)
                 score = self._score_metrics(before_metrics, after_metrics, lines, width, height)
-
                 if score > best:
                     best = score
-
         return best if best != -float('inf') else -1000.0
 
     def _grid_to_masks(self, grid, width, height):
         rows = []
-
         for r in range(height):
             mask = 0
             row = grid[r]
-
             for c in range(width):
                 if row[c] is not None:
                     mask |= 1 << c
-
             rows.append(mask)
-
         return rows
 
     def _masks_for_shape(self, shape):
         masks = []
         sh = len(shape)
         sw = len(shape[0]) if sh else 0
-
         for row in shape:
             mask = 0
             for c, val in enumerate(row):
                 if val:
                     mask |= 1 << c
             masks.append(mask)
-
         return masks, sw, sh
 
     def _get_rot_data(self, shape_name):
         cached = self._rot_mask_cache.get(shape_name)
         if cached is not None:
             return cached
-
         rotations = self.rotations.get(shape_name, [])
-
         if not rotations and shape_name in SHAPES:
             rotations = [SHAPES[shape_name]]
-
         data = []
-
         for shape in rotations:
             masks, sw, sh = self._masks_for_shape(shape)
             data.append((masks, sw, sh))
-
         self._rot_mask_cache[shape_name] = data
         return data
 
     def _fast_drop_mask(self, shape_masks, sw, sh, rows, width, height, x):
         if x < 0 or x + sw > width or sw <= 0 or sh <= 0 or sh > height:
             return -1
-
         shifted = [m << x for m in shape_masks]
         y = 0
         limit = height - sh
-
         while y <= limit:
             collides = False
-
             for r, m in enumerate(shifted):
                 if m and rows[y + r] & m:
                     collides = True
                     break
-
             if collides:
                 break
-
             y += 1
-
         y -= 1
         return y if y >= 0 else -1
 
     def _apply_and_clear(self, rows, shape_masks, x, y, width, height):
         new_rows = rows[:]
-
         for r, mask in enumerate(shape_masks):
             if not mask:
                 continue
-
             yy = y + r
             if 0 <= yy < height:
                 new_rows[yy] |= mask << x
-
         full_mask = (1 << width) - 1
         cleared = [row for row in new_rows if row != full_mask]
         lines = height - len(cleared)
-
         if lines > 0:
             new_rows = [0] * lines + cleared
-
         return new_rows, lines
 
     def _compute_metrics(self, rows, width, height):
         heights = [0] * width
         holes = 0
-
         for c in range(width):
             bit = 1 << c
             found = False
             top = -1
-
             for r in range(height):
                 if rows[r] & bit:
                     if top < 0:
@@ -1270,82 +972,47 @@ class QwenAI(BaseAI):
                     found = True
                 elif found:
                     holes += 1
-
             if top >= 0:
                 heights[c] = height - top
-
         aggregate_height = sum(heights)
         max_height = max(heights) if heights else 0
-
         bumpiness = 0
         for i in range(width - 1):
             bumpiness += abs(heights[i] - heights[i + 1])
-
         well_depth = 0
-
         if width >= 2:
             if heights[0] < heights[1]:
                 well_depth += heights[1] - heights[0]
             if heights[-1] < heights[-2]:
                 well_depth += heights[-1] - heights[-2]
-
         for i in range(1, width - 1):
             if heights[i] < heights[i - 1] and heights[i] < heights[i + 1]:
                 well_depth += min(heights[i - 1], heights[i + 1]) - heights[i]
-
         transitions = 0
-
         if self.weights.get('transitions', 0):
             if width > 1:
                 low_mask = (1 << (width - 1)) - 1
-
                 for row in rows:
                     transitions += ((row ^ (row >> 1)) & low_mask).bit_count()
-
                 full_mask = (1 << width) - 1
-
                 for i in range(height - 1):
                     transitions += ((rows[i] ^ rows[i + 1]) & full_mask).bit_count()
-
-        return (
-            heights,
-            holes,
-            max_height,
-            aggregate_height,
-            bumpiness,
-            well_depth,
-            transitions
-        )
+        return (heights, holes, max_height, aggregate_height, bumpiness, well_depth, transitions)
 
     def _score_metrics(self, before, after, lines, width, height):
         _, holes_before, max_before, agg_before, bump_before, well_before, _ = before
         _, holes_after, max_after, agg_after, bump_after, well_after, trans_after = after
-
         w = self.weights
-
         avg_height = agg_after / max(1, width)
-
         try:
             panic_threshold = float(w.get('panic_threshold', 0.62))
         except Exception:
             panic_threshold = 0.62
-
         panic = avg_height > height * panic_threshold or max_after >= max(1, height - 2)
         self._panic_mode = panic
-
         height_weight = w['height'] * (1.5 if panic else 1.0)
         holes_weight = w['holes'] * (1.3 if panic else 1.0)
         lines_weight = w['lines'] * (1.2 if panic else 1.0)
-
-        score = (
-            height_weight * avg_height +
-            lines_weight * lines +
-            holes_weight * holes_after +
-            w['bumpiness'] * bump_after +
-            w['well_depth'] * well_depth if False else 0
-        )
-
-        # Аккуратно собираем базовый счёт
         score = (
             height_weight * avg_height +
             lines_weight * lines +
@@ -1355,16 +1022,12 @@ class QwenAI(BaseAI):
             w['max_height'] * max_after +
             w['transitions'] * trans_after
         )
-
-        # Даунстэкинг: награждаем за улучшение состояния поля
         holes_fixed = max(0, holes_before - holes_after)
         bump_fixed = max(0, bump_before - bump_after)
         well_fixed = max(0, well_before - well_after)
         height_fixed = max(0, agg_before - agg_after)
         max_fixed = max(0, max_before - max_after)
-
         downstack_mult = 1.4 if panic else 1.0
-
         score += downstack_mult * (
             w['downstack_holes'] * holes_fixed +
             w['downstack_bump'] * bump_fixed +
@@ -1372,41 +1035,25 @@ class QwenAI(BaseAI):
             w['downstack_height'] * height_fixed +
             w['downstack_max'] * max_fixed
         )
-
-        # Штраф за создание новых дыр
         holes_added = max(0, holes_after - holes_before)
         score += w.get('create_hole_penalty', -0.75) * holes_added
-
-        # Штраф за рост высоты без очистки линий
         height_added = max(0, agg_after - agg_before)
         score += w.get('height_added_penalty', -0.015) * height_added
-
-        # В панике дополнительно наказываем за рост максимального столбца
         if panic and max_after > max_before:
             score += w.get('panic_height_penalty', -1.25) * (max_after - max_before)
-
-        # Почти проигрыш/проигрыш
         if max_after >= height:
             score -= 10000.0
-
         return score
 
     def evaluate(self, shape, x, drop_y, grid, width, height):
-        """
-        Совместимый внешний интерфейс оценки.
-        Внутри использует уже новую даунстэкинг-эвристику.
-        """
         rows = self._grid_to_masks(grid, width, height)
         before = self._compute_metrics(rows, width, height)
-
         masks, _, _ = self._masks_for_shape(shape)
         after_rows, lines = self._apply_and_clear(rows, masks, x, drop_y, width, height)
         after = self._compute_metrics(after_rows, width, height)
-
         return self._score_metrics(before, after, lines, width, height)
 
 class CustomAI(BaseAI):
-    """Кастомный ИИ с настраиваемыми весами из UI."""
     def __init__(self, player, config=None):
         super().__init__(player, config)
         self.weights = {
@@ -1442,16 +1089,14 @@ class Player:
 
         if self.is_bot:
             ai_type = settings.get('ai_type', 'qwen')
-            ai_config = settings.get('ai_config', {}) # Теперь сюда придёт реальный конфиг из main.py
+            ai_config = settings.get('ai_config', {})
             Log.info(f"Игрок {player_id}: запуск бота типа '{ai_type}'")
-            
-            if ai_type == 'deepseek': 
+            if ai_type == 'deepseek':
                 self.bot = DeepSeekAI(self, ai_config)
-            elif ai_type == 'custom': 
+            elif ai_type == 'custom':
                 self.bot = CustomAI(self, ai_config)
-            else: 
+            else:
                 self.bot = QwenAI(self, ai_config)
-
         self.generate_next_pieces()
         self.spawn_piece()
 
@@ -1480,7 +1125,7 @@ class Player:
             self.current_piece = temp
             self.current_piece.x = self.board.width // 2 - len(self.current_piece.shape[0]) // 2
             self.current_piece.y = 0
-            if not self.board.is_valid_position(self.current_piece): 
+            if not self.board.is_valid_position(self.current_piece):
                 self.alive = False
                 self.game_over_time = time.time()
         self.hold_used = True
@@ -1546,7 +1191,6 @@ class Player:
         lines_cleared = self.board.place_piece(self.current_piece)
         if lines_cleared > 0:
             Log.info(f"✨ Игрок {self.id} собрал {lines_cleared} линий! Score: {self.board.score}")
-        
         new_level = 1 + self.board.lines_cleared_total // 10
         if new_level > self.level:
             self.level = new_level
@@ -1567,6 +1211,7 @@ class Game:
         self.settings = settings
         self.game_mode = settings['game_mode']
         self.players_data = settings['players']
+        self.dynamic_keymap = settings.get('dynamic_keymap', {})
         self.num_players = len([p for p in self.players_data.values() if p.get('enabled', False)])
         self.players = []
         self.running = True
@@ -1576,7 +1221,7 @@ class Game:
         self.font = pygame.font.Font(None, 24)
         self.small_font = pygame.font.Font(None, 18)
         self.big_font = pygame.font.Font(None, 48)
-        
+
         if self.game_mode == 'coop':
             total_width = WIDTH * self.num_players
             self.shared_board = Board(total_width, HEIGHT)
@@ -1587,7 +1232,7 @@ class Game:
             t1, t2 = [], []
             for pid, pdata in self.players_data.items():
                 if pdata.get('enabled'): (t1 if len(t1)<2 else t2).append((pid, pdata))
-            self.team_board_w = WIDTH * 2  # 🔧 15 * 2 = 30 клеток для двух игроков в команде
+            self.team_board_w = WIDTH * 2
             self.team1_board = Board(self.team_board_w * 2, HEIGHT)
             self.team2_board = Board(self.team_board_w * 2, HEIGHT)
             self.teams = [{'board': self.team1_board, 'players': []}, {'board': self.team2_board, 'players': []}]
@@ -1601,7 +1246,6 @@ class Game:
             for pid, pdata in self.players_data.items():
                 if pdata.get('enabled'):
                     self.players.append(Player(pid, pdata, Board(WIDTH, HEIGHT, pdata['color'])))
-
         self.layout_positions = self.calculate_layout()
         self.screen = pygame.display.set_mode((self.layout_width, self.layout_height))
         pygame.display.set_caption("Tetris MP")
@@ -1610,7 +1254,6 @@ class Game:
         board_px_w, board_px_h = WIDTH * CELL_SIZE, HEIGHT * CELL_SIZE
         spacing, info_top = 20, 30
         info_bottom = 100 if self.game_mode != 'coop' else 140
-        
         if self.game_mode == 'coop':
             total_w = (WIDTH * self.num_players * CELL_SIZE) + 40
             total_h = info_top + board_px_h + info_bottom + 40
@@ -1620,7 +1263,7 @@ class Game:
             self.board_height_px = board_px_h
             return []
         elif self.game_mode == '2vs2':
-            board_px_w = self.team_board_w * CELL_SIZE  # 🔧 Подхватываем реальную ширину команды
+            board_px_w = self.team_board_w * CELL_SIZE
             total_w = (board_px_w * 2) + (spacing * 3)
             total_h = info_top + board_px_h + info_bottom + spacing * 2
             self.layout_width, self.layout_height = total_w, total_h
@@ -1664,24 +1307,57 @@ class Game:
     def handle_keydown(self, key):
         for player in self.players:
             if player.is_bot or not player.alive: continue
-            keymap = KEYMAP.get(player.id, {})
-            for action, k in keymap.items():
-                if key == k:
-                    if action in ['rotate', 'hard_drop', 'hold']: player.handle_action(action)
-                    else: player.key_state[action] = True
+            base_keymap = KEYMAP.get(player.id, {})
+            custom_keymap = self.dynamic_keymap.get(player.id, {})
+            active_keymap = {**base_keymap, **custom_keymap}
+
+            for action, k in active_keymap.items():
+                if isinstance(k, int):
+                    match = (key == k)
+                else:
+                    event_name = pygame.key.name(key).lower().replace(' ', '')
+                    map_name = str(k).lower().replace(' ', '')
+                    if map_name in ['shift', 'shiftl', 'shiftr'] and event_name in ['leftshift', 'rightshift', 'shift']:
+                        match = True
+                    elif map_name in ['ctrl', 'ctrll', 'ctrlr'] and event_name in ['leftctrl', 'rightctrl', 'ctrl']:
+                        match = True
+                    else:
+                        match = (event_name == map_name)
+
+                if match:
+                    if action in ['rotate', 'hard_drop', 'hold']:
+                        player.handle_action(action)
+                    else:
+                        player.key_state[action] = True
 
     def handle_keyup(self, key):
         for player in self.players:
             if player.is_bot: continue
-            keymap = KEYMAP.get(player.id, {})
-            for action, k in keymap.items():
-                if key == k and action not in ['rotate', 'hard_drop', 'hold']: player.key_state[action] = False
+            base_keymap = KEYMAP.get(player.id, {})
+            custom_keymap = self.dynamic_keymap.get(player.id, {})
+            active_keymap = {**base_keymap, **custom_keymap}
+
+            for action, k in active_keymap.items():
+                if isinstance(k, int):
+                    match = (key == k)
+                else:
+                    event_name = pygame.key.name(key).lower().replace(' ', '')
+                    map_name = str(k).lower().replace(' ', '')
+                    if map_name in ['shift', 'shiftl', 'shiftr'] and event_name in ['leftshift', 'rightshift', 'shift']:
+                        match = True
+                    elif map_name in ['ctrl', 'ctrll', 'ctrlr'] and event_name in ['leftctrl', 'rightctrl', 'ctrl']:
+                        match = True
+                    else:
+                        match = (event_name == map_name)
+
+                if match and action not in ['rotate', 'hard_drop', 'hold']:
+                    player.key_state[action] = False
 
     def check_game_over(self):
         if self.game_mode == '2vs2':
             t1_alive = any(p.alive for p in self.teams[0]['players'])
             t2_alive = any(p.alive for p in self.teams[1]['players'])
-            if not t1_alive or not t2_alive: 
+            if not t1_alive or not t2_alive:
                 Log.info(f"🏆 Команда {'1' if not t1_alive else '2'} проиграла. Игра завершена.")
                 self.running = False
         else:
