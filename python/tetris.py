@@ -1,4 +1,4 @@
-import pygame, random, copy, time, threading
+import pygame, random, copy, time, threading, asyncio, json
 from queue import Queue, Empty
 from config import *
 from rich.console import Console
@@ -1066,6 +1066,145 @@ class CustomAI(BaseAI):
         }
         Log.info(f"CustomAI инициализирован для игрока {player.id} с весами: {self.weights}")
 
+class StudentAI(BaseAI):
+    """Бот-ученик: копирует действия учителя с задержкой."""
+    def __init__(self, player, teacher_player, delay=5, config=None):
+        super().__init__(player, config)
+        self.teacher = teacher_player
+        self.delay = max(0, int(delay))
+        self.action_log = []   # [(target_tick, action), ...]
+        self.tick = 0
+
+    def log_teacher_action(self, action: str):
+        """Вызывается из Game, когда учитель выполняет действие."""
+        self.action_log.append((self.tick + self.delay, action))
+
+    def get_action(self):
+        self.tick += 1
+        # Выполняем все действия, чей тик наступил
+        while self.action_log and self.action_log[0][0] <= self.tick:
+            return self.action_log.pop(0)[1]
+        return None
+
+class SelfLearningEngine:
+    """Прогоняет N симуляций CustomAI, мутирует веса в сторону лучших результатов."""
+    def __init__(self, iterations: int, ai_type: str, base_config: dict):
+        self.iterations = max(1, int(iterations))
+        self.ai_type = ai_type
+        self.weights = dict(base_config) if base_config else {
+            'height': -0.51, 'lines': 0.76, 'holes': -0.36,
+            'bumpiness': -0.18, 'well_depth': -0.15
+        }
+        self.best_weights = dict(self.weights)
+        self.best_score = -1
+        self.stats = []   # список словарей {iter, score, lines, time}
+
+    def _mutate(self):
+        from random import uniform
+        for k in self.weights:
+            delta = self.weights[k] * SELF_LEARNING_MUTATION_RATE
+            self.weights[k] += uniform(-abs(delta), abs(delta))
+
+    def run(self, on_iter_callback=None):
+        """Запускает все итерации. Возвращает итоговую статистику."""
+        for i in range(1, self.iterations + 1):
+            score, lines, t = self._run_one()
+            entry = {'iter': i, 'score': score, 'lines': lines, 'time': round(t, 2)}
+            self.stats.append(entry)
+            if score > self.best_score:
+                self.best_score = score
+                self.best_weights = dict(self.weights)
+                Log.info(f"🧬 Итерация {i}: НОВЫЙ РЕКОРД score={score}, lines={lines}")
+            else:
+                self._mutate()  # не улучшили — мутируем
+            if on_iter_callback:
+                on_iter_callback(entry)
+        return {
+            'best_score': self.best_score,
+            'best_weights': self.best_weights,
+            'stats': self.stats,
+            'avg_score': sum(s['score'] for s in self.stats) / len(self.stats),
+        }
+
+    def _run_one(self):
+        """Одна headless-симуляция. Возвращает (score, lines, time_sec)."""
+        import time as _t
+        board = Board(WIDTH, HEIGHT)
+        # Временный "player-обёртка" для AI
+        class _FakePlayer:
+            pass
+        fp = _FakePlayer()
+        fp.id = 0
+        fp.board = board
+        fp.hold_piece = None
+        fp.hold_used = False
+        fp.next_pieces = []
+        fp.current_piece = None
+        fp.alive = True
+        fp.color = (255, 255, 255)
+
+        if self.ai_type == 'qwen':
+            bot = QwenAI(fp, {})
+        elif self.ai_type == 'deepseek':
+            bot = DeepSeekAI(fp, {})
+        else:
+            bot = CustomAI(fp, dict(self.weights))
+
+        fp.bot = bot
+        # Инициализация фигур
+        fp.next_pieces = [Piece(random.choice(list(SHAPES.keys())), fp.color) for _ in range(3)]
+        fp.current_piece = fp.next_pieces.pop(0)
+        fp.next_pieces.append(Piece(random.choice(list(SHAPES.keys())), fp.color))
+
+        t0 = _t.time()
+        max_steps = 5000  # защита от зависания
+        step = 0
+        while fp.alive and step < max_steps:
+            action = bot.get_action()
+            step += 1
+            if action is None:
+                # Ждём, пока AI посчитает
+                import time as _t2; _t2.sleep(0.001)
+                continue
+            # Применяем действие
+            if action == 'left':   fp.current_piece.move(-1, 0)
+            elif action == 'right':fp.current_piece.move(1, 0)
+            elif action == 'soft_drop': fp.current_piece.move(0, 1)
+            elif action == 'rotate': fp.current_piece.rotate()
+            elif action == 'hold':
+                # упрощённый hold
+                if fp.hold_piece is None:
+                    fp.hold_piece = Piece(fp.current_piece.shape_name, fp.color)
+                    fp.current_piece = fp.next_pieces.pop(0)
+                    fp.next_pieces.append(Piece(random.choice(list(SHAPES.keys())), fp.color))
+                else:
+                    fp.hold_piece, fp.current_piece = fp.current_piece, fp.hold_piece
+            elif action == 'hard_drop':
+                while board.is_valid_position(fp.current_piece):
+                    fp.current_piece.move(0, 1)
+                fp.current_piece.move(0, -1)
+                board.place_piece(fp.current_piece)
+                # spawn
+                if not fp.next_pieces:
+                    fp.next_pieces.append(Piece(random.choice(list(SHAPES.keys())), fp.color))
+                fp.current_piece = fp.next_pieces.pop(0)
+                fp.next_pieces.append(Piece(random.choice(list(SHAPES.keys())), fp.color))
+                fp.hold_used = False
+                if not board.is_valid_position(fp.current_piece):
+                    fp.alive = False
+            # Валидация позиции
+            if not board.is_valid_position(fp.current_piece):
+                fp.current_piece.move(1, 0) if action == 'left' else fp.current_piece.move(-1, 0)
+                if action in ('soft_drop',):
+                    board.place_piece(fp.current_piece)
+                    if not fp.next_pieces:
+                        fp.next_pieces.append(Piece(random.choice(list(SHAPES.keys())), fp.color))
+                    fp.current_piece = fp.next_pieces.pop(0)
+                    fp.next_pieces.append(Piece(random.choice(list(SHAPES.keys())), fp.color))
+                    if not board.is_valid_position(fp.current_piece):
+                        fp.alive = False
+        return board.score, board.lines_cleared_total, _t.time() - t0
+
 class Player:
     def __init__(self, player_id, settings, board):
         self.id = player_id
@@ -1095,6 +1234,10 @@ class Player:
                 self.bot = DeepSeekAI(self, ai_config)
             elif ai_type == 'custom':
                 self.bot = CustomAI(self, ai_config)
+            elif ai_type == 'student':
+                # teacher_player подставится позже из Game
+                self.bot = None  # будет инициализирован в Game.__init__
+                self._pending_student = True
             else:
                 self.bot = QwenAI(self, ai_config)
         self.generate_next_pieces()
@@ -1212,8 +1355,39 @@ class Game:
         self.game_mode = settings['game_mode']
         self.players_data = settings['players']
         self.dynamic_keymap = settings.get('dynamic_keymap', {})
+
+        self.is_spectator = settings.get('is_spectator', False)
+
         self.num_players = len([p for p in self.players_data.values() if p.get('enabled', False)])
         self.players = []
+
+        if self.game_mode == 'self_learning':
+            iters = settings.get('self_learning_iters', 20)
+            ai_type = settings.get('self_learning_ai', 'custom')
+            base_cfg = settings.get('custom_ai_config', {})
+            Log.info(f"🧬 Запуск Self-Learning: {iters} итераций, AI={ai_type}")
+            engine = SelfLearningEngine(iters, ai_type, base_cfg)
+            report = engine.run()
+            Log.info("=" * 50)
+            Log.info(f"🏆 Лучший счёт: {report['best_score']}")
+            Log.info(f"📊 Средний счёт: {report['avg_score']:.1f}")
+            Log.info(f"🧬 Лучшие веса: {report['best_weights']}")
+            Log.info("=" * 50)
+            # Сохраняем лучшие веса в файл
+            import json as _json
+            with open('self_learning_best.json', 'w') as f:
+                _json.dump(report, f, indent=2)
+            self.running = False
+            return
+
+        if self.game_mode == 'teacher_student':
+            teacher = next((p for p in self.players if p.id == 1), None)
+            student = next((p for p in self.players if p.id == 2), None)
+            if teacher and student and getattr(student, '_pending_student', False):
+                delay = settings.get('teacher_student_delay', 5)
+                student.bot = StudentAI(student, teacher, delay=delay)
+                Log.info(f"🎓 Режим Teacher-Student: задержка ученика = {delay} тиков")
+
         self.running = True
         self.paused = False
         self.clock = pygame.time.Clock()
@@ -1247,6 +1421,33 @@ class Game:
                 if pdata.get('enabled'):
                     self.players.append(Player(pid, pdata, Board(WIDTH, HEIGHT, pdata['color'])))
         self.layout_positions = self.calculate_layout()
+
+        self.remote_player_boards = {}   # <-- добавляем явно
+
+        self.network_client = None
+        if self.game_mode in ['lan', 'global']:
+            host = settings.get('server_host', '127.0.0.1')
+            port = settings.get('server_port', 8888)
+            room_name = settings.get('room_name', 'default_room')
+            is_host = settings.get('is_host', True)
+
+            # Собираем инфо о локальных игроках для отправки на сервер
+            player_info = {
+                str(p.id): {
+                    'nickname': p.nickname,
+                    'color': f"#{p.color.r:02x}{p.color.g:02x}{p.color.b:02x}",
+                    'is_spectator': False
+                }
+                for p in self.players
+            }
+
+            self.network_client = NetworkClient(host, port, room_name, is_host, player_info)
+            self.network_client.start()
+
+            # В сетевом режиме мы должны уметь отображать удаленных игроков.
+            # Для простоты создаем "пустышки" для удаленных игроков, которые будут обновляться
+            self.remote_player_boards = {}
+
         self.screen = pygame.display.set_mode((self.layout_width, self.layout_height))
         pygame.display.set_caption("Tetris MP")
 
@@ -1270,6 +1471,17 @@ class Game:
             self.board_width_px, self.board_height_px = board_px_w, board_px_h
             self.team_positions = [(spacing, info_top + spacing), (spacing + board_px_w + spacing, info_top + spacing)]
             return self.team_positions
+        elif self.game_mode in ['lan', 'global']:
+            board_px_w, board_px_h = WIDTH * CELL_SIZE, HEIGHT * CELL_SIZE  # 150 x 300
+            mini_w = MINI_BOARD_WIDTH  # 75
+            mini_h = 150               # высота мини-поля (как в 2vs2)
+            side_gap = 20
+            spacing = 20
+            total_w = mini_w + side_gap + board_px_w + side_gap + mini_w + spacing
+            total_h = board_px_h + 50  # <-- Было 800, стало 350
+            self.layout_width, self.layout_height = total_w, total_h
+            self.board_width_px, self.board_height_px = board_px_w, board_px_h
+            return []
         else:
             cols = min(self.num_players, 4)
             rows = (self.num_players + cols - 1) // cols
@@ -1284,21 +1496,55 @@ class Game:
             return positions
 
     def run(self):
-        Log.info(f"🎮 Игра запущена. Режим: {self.game_mode}, Игроков: {self.num_players}")
+        Log.info(f"🎮 Игра запущена. Режим: {self.game_mode}, Игроков: {self.num_players}, Наблюдатель: {self.is_spectator}")
+        if self.game_mode == 'self_learning':
+            # Симуляции уже прошли в __init__, просто выходим
+            pygame.quit()
+            return
         while self.running:
             dt = self.clock.tick(60)
             current_time = time.time()
             for event in pygame.event.get():
-                if event.type == pygame.QUIT: self.running = False
+                if event.type == pygame.QUIT:
+                    self.running = False
                 elif event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_p or event.key == pygame.K_SPACE:
+                    if event.key in (pygame.K_p, pygame.K_SPACE, pygame.K_ESCAPE):
                         self.paused = not self.paused
                         Log.info(f"⏸️ Игра {'ПРИОСТАНОВЛЕНА' if self.paused else 'ПРОДОЛЖЕНА'}")
-                    elif not self.paused: self.handle_keydown(event.key)
-                elif event.type == pygame.KEYUP and not self.paused: self.handle_keyup(event.key)
+                    elif not self.paused and not self.is_spectator:
+                        # Наблюдатель не может управлять игрой через клавиатуру
+                        self.handle_keydown(event.key)
+                elif event.type == pygame.KEYUP:
+                    if not self.paused and not self.is_spectator:
+                        self.handle_keyup(event.key)
+                elif event.type == pygame.MOUSEBUTTONDOWN and self.paused:
+                    if hasattr(self, 'btn_resume') and self.btn_resume.collidepoint(event.pos):
+                        self.paused = False
+                    elif hasattr(self, 'btn_quit') and self.btn_quit.collidepoint(event.pos):
+                        self.running = False
+
             if not self.paused:
-                for player in self.players: player.update(dt, current_time)
+                for player in self.players:
+                    if not getattr(player, 'is_spectator', False):
+                        player.update(dt, current_time)
                 self.check_game_over()
+
+            if self.network_client:
+                # Всегда подтягиваем свежие данные удалённых игроков (даже на паузе — для отрисовки)
+                self.remote_player_boards = dict(self.network_client.remote_players)
+
+                if not self.paused:
+                    local_state = {
+                        str(p.id): {
+                            'score': p.board.score,
+                            'lines': p.board.lines_cleared_total,
+                            'alive': p.alive,
+                            'grid': [[1 if cell is not None else 0 for cell in row] for row in p.board.grid]
+                        }
+                        for p in self.players if not p.is_bot
+                    }
+                    self.network_client.send_state(local_state)
+
             self.draw()
             if self.paused: self.draw_pause_overlay()
             pygame.display.flip()
@@ -1329,6 +1575,11 @@ class Game:
                         player.handle_action(action)
                     else:
                         player.key_state[action] = True
+                    # --- Teacher-Student: логируем действие учителя ---
+                    if self.game_mode == 'teacher_student' and player.id == 1:
+                        student = next((p for p in self.players if p.id == 2), None)
+                        if student and student.bot and isinstance(student.bot, StudentAI):
+                            student.bot.log_teacher_action(action)
 
     def handle_keyup(self, key):
         for player in self.players:
@@ -1367,9 +1618,118 @@ class Game:
 
     def draw(self):
         self.screen.fill((30,30,30))
-        if self.game_mode == 'coop': self.draw_coop()
+        if self.game_mode in ['lan', 'global']:self.draw_network()
+        elif self.game_mode == 'coop': self.draw_coop()
         elif self.game_mode == '2vs2': self.draw_2vs2()
         else: self.draw_vs()
+
+    def draw_minimized_board(self, board, x, y, player_color, nickname=""):
+        """Мини-поле: ширина = MINI_BOARD_WIDTH, высота фиксирована = 150 px"""
+        mini_cell_x = MINI_BOARD_WIDTH / board.width   # плавающее, может быть нецелым
+        mini_cell_y = CELL_SIZE // 2                   # 5 px, фиксировано
+        w = int(mini_cell_x * board.width)
+        h = int(mini_cell_y * board.height)
+        pygame.draw.rect(self.screen, (80, 80, 80), (x - 1, y - 1, w + 2, h + 2), 1)
+        for row in range(board.height):
+            for col in range(board.width):
+                color = board.grid[row][col]
+                if color:
+                    rect = pygame.Rect(
+                        x + int(col * mini_cell_x),
+                        y + int(row * mini_cell_y),
+                        int(mini_cell_x),
+                        int(mini_cell_y)
+                    )
+                    pygame.draw.rect(self.screen, color, rect)
+        if nickname:
+            nick_surf = self.small_font.render(nickname[:10], True, player_color)
+            self.screen.blit(nick_surf, (x, y - 12))
+
+    def draw_network(self):
+        if not self.players:
+            return
+
+        if self.is_spectator:
+            local_player = self.players[0]
+        else:
+            local_player = next((p for p in self.players if not p.is_bot), self.players[0])
+
+        main_x = (self.layout_width - self.board_width_px) // 2
+        main_y = (self.layout_height - self.board_height_px) // 2  # центрируем по вертикали
+        self.draw_board(local_player.board, main_x, main_y, local_player)
+
+        # Собираем остальных игроков (локальных и удалённых)
+        local_ids = {str(p.id) for p in self.players}
+        others = []
+        for p in self.players:
+            if p != local_player:
+                others.append(('local', p, None))
+        for pid, pdata in self.remote_player_boards.items():
+            if pid not in local_ids:
+                others.append(('remote', pid, pdata))
+
+        mini_w = MINI_BOARD_WIDTH
+        mini_h = 150  # Фиксированная высота мини-поля
+        side_gap = 20
+
+        # Позиции для левого и правого столбцов
+        left_x = main_x - side_gap - mini_w
+        left_y_start = main_y
+
+        right_x = main_x + self.board_width_px + side_gap
+        right_y_start = main_y
+
+        # Распределяем остальных игроков строго по бокам (до 2-х слева и до 2-х справа в видимой области)
+        for i, item in enumerate(others):
+            if i < 2:  # Левая сторона
+                y = left_y_start + i * mini_h
+                self._draw_other_player(item, left_x, y)
+            else:      # Правая сторона
+                y = right_y_start + (i - 2) * mini_h
+                self._draw_other_player(item, right_x, y)
+
+    def _draw_other_player(self, item, x, y):
+        kind, payload, pdata = item
+        if kind == 'local':
+            p = payload
+            self.draw_minimized_board(p.board, x, y, p.color, p.nickname)
+        else:
+            self._draw_remote_minimized_board(pdata, x, y)
+
+    def _draw_remote_minimized_board(self, pdata, x, y):
+        grid = pdata.get('grid') or []
+        color_str = pdata.get('color', '#FFFFFF')
+        nickname = pdata.get('nickname', 'Remote')
+
+        if isinstance(color_str, str) and color_str.startswith('#') and len(color_str) == 7:
+            try:
+                color = (int(color_str[1:3], 16), int(color_str[3:5], 16), int(color_str[5:7], 16))
+            except ValueError:
+                color = (255, 255, 255)
+        else:
+            color = (255, 255, 255)
+
+        mini_cell_x = MINI_BOARD_WIDTH / WIDTH      # 75 / 15 = 5 px
+        mini_cell_y = self.board_height_px / HEIGHT # 300 / 30 = 10 px → ячейки остаются прямоугольными 5×10
+        w = int(mini_cell_x * WIDTH)
+        h = int(mini_cell_y * HEIGHT)
+
+        pygame.draw.rect(self.screen, (80, 80, 80), (x - 1, y - 1, w + 2, h + 2), 1)
+        for row in range(min(len(grid), HEIGHT)):
+            row_data = grid[row]
+            for col in range(min(len(row_data), WIDTH)):
+                if row_data[col]:
+                    rect = pygame.Rect(
+                        x + int(col * mini_cell_x),
+                        y + int(row * mini_cell_y),
+                        int(mini_cell_x),
+                        int(mini_cell_y)
+                    )
+                    pygame.draw.rect(self.screen, color, rect)
+
+        if nickname:
+            nick_surf = self.small_font.render(str(nickname)[:10], True, color)
+            self.screen.blit(nick_surf, (x, y - 12))
 
     def draw_vs(self):
         for idx, player in enumerate(self.players):
@@ -1394,16 +1754,37 @@ class Game:
             self.draw_player_info(player, px, info_y)
 
     def draw_2vs2(self):
-        for i in range(2):
-            x, y = self.team_positions[i]
-            team_label = self.font.render(f"TEAM {i+1}", True, (200, 200, 200))
-            self.screen.blit(team_label, (x + self.board_width_px//2 - team_label.get_width()//2, y - 25))
-            board = self.teams[i]['board']
-            active = next((p for p in self.teams[i]['players'] if p.alive and p.current_piece), None)
-            self.draw_board(board, x, y, active)
-            info_start_y = y + self.board_height_px + 5
-            for j, player in enumerate(self.teams[i]['players']):
-                self.draw_player_info(player, x, info_start_y + j * 130)
+        """Отрисовка 2VS2 с минимизированными полями согласно п.3 и п.6"""
+        local_player = next((p for p in self.players if not p.is_bot), self.players[0]) if self.players else None
+
+        if local_player and len(self.players) > 1:
+            main_x = (self.layout_width - self.board_width_px) // 2
+            main_y = (self.layout_height - self.board_height_px) // 2
+            self.draw_board(local_player.board, main_x, main_y, local_player)
+
+            others = [p for p in self.players if p != local_player]
+            mini_w, mini_h = 75, 150
+
+            # Слева: 1 игрок (напарник или противник)
+            left_x = main_x - mini_w - 20
+            left_y = main_y + (self.board_height_px - mini_h) // 2
+            if len(others) > 0:
+                self.draw_minimized_board(others[0].board, left_x, left_y, others[0].color, others[0].nickname)
+
+            # Справа: до 2 игроков
+            right_x = main_x + self.board_width_px + 20
+            right_y = main_y + (self.board_height_px - mini_h) // 2
+            for i in range(1, min(3, len(others))):
+                self.draw_minimized_board(others[i].board, right_x, right_y + (i-1) * (mini_h + 10), others[i].color, others[i].nickname)
+        else:
+            # Fallback для одиночной настройки
+            for i in range(2):
+                x, y = self.team_positions[i]
+                team_label = self.font.render(f"TEAM {i+1}", True, (200, 200, 200))
+                self.screen.blit(team_label, (x + self.board_width_px//2 - team_label.get_width()//2, y - 25))
+                board = self.teams[i]['board']
+                active = next((p for p in self.teams[i]['players'] if p.alive and p.current_piece), None)
+                self.draw_board(board, x, y, active)
 
     def draw_board(self, board, x, y, active_player=None):
         pygame.draw.rect(self.screen, (100,100,100), (x-2, y-2, board.width*CELL_SIZE+4, board.height*CELL_SIZE+4), 2)
@@ -1446,12 +1827,117 @@ class Game:
                     pygame.draw.rect(self.screen, (255,255,255), (x + c*CELL_SIZE, y + r*CELL_SIZE, CELL_SIZE, CELL_SIZE), 1)
 
     def draw_pause_overlay(self):
+        """Отрисовка меню паузы с интерактивными кнопками (п.5)"""
         overlay = pygame.Surface((self.layout_width, self.layout_height), pygame.SRCALPHA)
         overlay.fill((0, 0, 0, 180))
         self.screen.blit(overlay, (0, 0))
+
         pause_text = self.big_font.render("PAUSE", True, (255, 255, 255))
-        text_rect = pause_text.get_rect(center=(self.layout_width//2, self.layout_height//2))
+        text_rect = pause_text.get_rect(center=(self.layout_width//2, self.layout_height//2 - 60))
         self.screen.blit(pause_text, text_rect)
-        hint = self.small_font.render("Press P or Space to resume", True, (200, 200, 200))
-        hint_rect = hint.get_rect(center=(self.layout_width//2, self.layout_height//2 + 40))
-        self.screen.blit(hint, hint_rect)
+
+        btn_w, btn_h = 220, 50
+        self.btn_resume = pygame.Rect(self.layout_width//2 - btn_w//2, self.layout_height//2, btn_w, btn_h)
+        self.btn_quit = pygame.Rect(self.layout_width//2 - btn_w//2, self.layout_height//2 + 70, btn_w, btn_h)
+
+        mouse_pos = pygame.mouse.get_pos()
+
+        # Кнопка "Продолжить"
+        color_resume = (0, 220, 0) if self.btn_resume.collidepoint(mouse_pos) else (0, 180, 0)
+        pygame.draw.rect(self.screen, color_resume, self.btn_resume, border_radius=8)
+        text_resume = self.font.render("Продолжить", True, (255, 255, 255))
+        self.screen.blit(text_resume, text_resume.get_rect(center=self.btn_resume.center))
+
+        # Кнопка "Покинуть игру"
+        color_quit = (220, 0, 0) if self.btn_quit.collidepoint(mouse_pos) else (180, 0, 0)
+        pygame.draw.rect(self.screen, color_quit, self.btn_quit, border_radius=8)
+        text_quit = self.font.render("Покинуть игру", True, (255, 255, 255))
+        self.screen.blit(text_quit, text_quit.get_rect(center=self.btn_quit.center))
+
+class NetworkClient:
+    """Клиент для асинхронного обмена данными с сервером TetrisMP."""
+
+    def __init__(self, host: str, port: int, room_name: str, is_host: bool, player_info: Dict[str, Any]):
+        self.host = host
+        self.port = port
+        self.room_name = room_name
+        self.is_host = is_host
+        self.player_info = player_info
+
+        self.room_id: Optional[str] = None
+        self.is_spectator: bool = False
+        self.remote_players: Dict[str, Any] = {}
+
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._thread: Optional[threading.Thread] = None
+        self._running = False
+        self._writer: Optional[asyncio.StreamWriter] = None
+
+    def start(self) -> None:
+        """Запускает сетевой клиент в фоновом потоке."""
+        self._running = True
+        self._thread = threading.Thread(target=self._run_asyncio, daemon=True)
+        self._thread.start()
+
+    def _run_asyncio(self) -> None:
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
+        self._loop.run_until_complete(self._connect_and_listen())
+
+    async def _connect_and_listen(self) -> None:
+        try:
+            self._reader, self._writer = await asyncio.open_connection(self.host, self.port)
+
+            if self.is_host:
+                msg = {"action": "create_room", "room_id": self.room_name, "game_mode": "coop", "player_info": self.player_info}
+            else:
+                msg = {"action": "join_room", "room_id": self.room_name, "player_info": self.player_info}
+
+            self._writer.write((json.dumps(msg) + '\n').encode('utf-8'))
+            await self._writer.drain()
+
+            while self._running and self._reader and not self._reader.at_eof():
+                line = await self._reader.readline()
+                if not line:
+                    break
+                msg = json.loads(line.decode('utf-8').strip())
+                self._process_message(msg)
+        except Exception as e:
+            Log.error(f"🌐 Ошибка сети: {e}")
+        finally:
+            self._running = False
+            if self._writer:
+                self._writer.close()
+
+    def _process_message(self, msg: Dict[str, Any]) -> None:
+        action = msg.get('action')
+        if action in ('room_created', 'room_joined'):
+            self.room_id = msg.get('room_id')
+            self.is_spectator = msg.get('is_spectator', False)
+            self.remote_players = msg.get('players', {})
+        elif action == 'state_update':
+            self.remote_players = msg.get('state', {})
+        elif action in ('player_joined', 'player_left'):
+            self.remote_players = msg.get('players', {})
+
+    def send_state(self, state: Dict[str, Any]) -> None:
+        """Отправляет состояние локального игрока на сервер."""
+        if self._loop and self._running and self.room_id and not self.is_spectator:
+            msg = {"action": "update_state", "room_id": self.room_id, "state": state}
+            asyncio.run_coroutine_threadsafe(self._send_msg(msg), self._loop)
+
+    async def _send_msg(self, msg: Dict[str, Any]) -> None:
+        if self._writer:
+            try:
+                self._writer.write((json.dumps(msg) + '\n').encode('utf-8'))
+                await self._writer.drain()
+            except Exception:
+                pass
+
+    def stop(self) -> None:
+        """Останавливает сетевой клиент."""
+        self._running = False
+        if self._loop:
+            self._loop.call_soon_threadsafe(self._loop.stop)
+        if self._thread:
+            self._thread.join(timeout=1.0)

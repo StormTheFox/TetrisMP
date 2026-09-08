@@ -184,10 +184,11 @@ class TetrisSetup:
             'bg': '#000', 'frame_bg': '#111', 'accent': '#e94560',
             'text': '#eeeeee', 'button': '#0f3460', 'button_hover': '#533483'
         }
+        # СТРОГО 4 игрока для локальной настройки
         self.player_colors = {1: '#FF4444', 2: '#44FF44', 3: '#4444FF', 4: '#FFFF44'}
-        self.player_enabled = {i: tk.BooleanVar(value=True) for i in range(1,5)}
-        self.player_is_bot = {i: tk.BooleanVar(value=False) for i in range(1,5)}
-        self.player_ai_type = {i: tk.StringVar(value='Qwen') for i in range(1,5)}
+        self.player_enabled = {i: tk.BooleanVar(value=True) for i in range(1, 5)}
+        self.player_is_bot = {i: tk.BooleanVar(value=False) for i in range(1, 5)}
+        self.player_ai_type = {i: tk.StringVar(value='DeepSeek') for i in range(1, 5)}
         self.fall_speeds = {}
         self.nickname_entries = {}
         self.custom_ai_config = {}
@@ -196,6 +197,11 @@ class TetrisSetup:
         self.bot_checkboxes = {}
         self.ai_menus = {}
         self.speed_labels = {}
+        self.self_learning_iters = tk.IntVar(value=20)
+        self.self_learning_ai = tk.StringVar(value='Custom')
+        self.teacher_student_delay = tk.IntVar(value=5)
+        self.game_mode = tk.StringVar(value="vs")
+        self.game_mode.trace_add("write", self._on_mode_change)
 
         self.room_name_var = tk.StringVar(value="tetris_room")
         self.dynamic_keybinds = {
@@ -207,20 +213,27 @@ class TetrisSetup:
         self.game_mode.trace_add("write", self._on_mode_change)
         self.setup_ui()
 
-    def _on_mode_change(self, *args):
-        self.on_game_mode_change()
+    def _on_mode_change(self, *args): self.on_game_mode_change()
 
     def on_game_mode_change(self):
         mode = self.game_mode.get()
-        if mode == 'lan':
+        # Скрываем всё
+        for w in (self.room_name_container, self.ml_container, self.ts_container):
+            w.pack_forget()
+        # Показываем нужное
+        if mode in ['lan', 'global']:
             self.room_name_container.pack(fill='x', pady=10, before=self.bottom_frame)
-            for p in [2, 3, 4]:
-                self.player_enabled[p].set(False)
-                self.update_player_state(p)
-        else:
-            self.room_name_container.pack_forget()
-            for p in [2, 3, 4]:
-                self.player_enabled[p].set(True)
+        elif mode == 'self_learning':
+            self.ml_container.pack(fill='x', pady=10, before=self.bottom_frame)
+        elif mode == 'teacher_student':
+            self.ts_container.pack(fill='x', pady=10, before=self.bottom_frame)
+            # Жёстко фиксируем игроков 1 и 2
+            self.player_enabled[1].set(True)
+            self.player_enabled[2].set(True)
+            self.player_is_bot[1].set(False)
+            self.player_is_bot[2].set(True)
+            self.player_ai_type[2].set('Student')
+            for p in range(1, 3):
                 self.update_player_state(p)
 
     def setup_ui(self):
@@ -238,11 +251,16 @@ class TetrisSetup:
                              font=("Helvetica", 12, "bold"), padx=20, pady=15)
         left.pack(side='left', fill='both', expand=True, padx=(0,10))
 
-        modes = [("VS", "vs"), ("CO-OP", "coop"), ("2 VS 2", "2vs2"), ("LAN Multiplayer", "lan")]
+        modes = [
+            ("VS", "vs"), ("CO-OP", "coop"), ("2 VS 2", "2vs2"),
+            ("Local LAN", "lan"), ("Global", "global"),
+            ("🧬 Self-Learning", "self_learning"),
+            ("🎓 Teacher-Student", "teacher_student")
+        ]
         for text, value in modes:
             tk.Radiobutton(left, text=text, variable=self.game_mode, value=value,
-                           bg=self.colors['frame_bg'], fg=self.colors['text'],
-                           selectcolor=self.colors['frame_bg'], font=("Helvetica", 11)).pack(anchor='w', pady=5)
+                        bg=self.colors['frame_bg'], fg=self.colors['text'],
+                        selectcolor=self.colors['frame_bg'], font=("Helvetica", 11)).pack(anchor='w', pady=5)
 
         right = tk.LabelFrame(top, text="Players Configuration", bg=self.colors['frame_bg'], fg=self.colors['text'],
                               font=("Helvetica", 12, "bold"), padx=15, pady=10)
@@ -304,6 +322,22 @@ class TetrisSetup:
         self.keybind_btn = tk.Button(self.room_name_container, text="⌨️ Настроить клавиши", bg='#533483', fg='white', font=("Helvetica", 10, "bold"), command=self.open_keybind_settings)
         self.keybind_btn.pack(side='left', padx=15)
 
+        self.ml_container = tk.Frame(main, bg=self.colors['bg'])
+        tk.Label(self.ml_container, text="Итераций:", bg=self.colors['bg'],
+                fg=self.colors['text'], font=("Helvetica", 11)).pack(side='left', padx=5)
+        tk.Spinbox(self.ml_container, from_=1, to=500, textvariable=self.self_learning_iters,
+                bg='#222', fg='white', width=6).pack(side='left', padx=5)
+        tk.Label(self.ml_container, text="AI:", bg=self.colors['bg'],
+                fg=self.colors['text'], font=("Helvetica", 11)).pack(side='left', padx=(15,5))
+        tk.OptionMenu(self.ml_container, self.self_learning_ai,
+                    "Custom", "Qwen", "DeepSeek").pack(side='left')
+
+        self.ts_container = tk.Frame(main, bg=self.colors['bg'])
+        tk.Label(self.ts_container, text="Задержка ученика (тики):",
+                bg=self.colors['bg'], fg=self.colors['text'], font=("Helvetica", 11)).pack(side='left', padx=5)
+        tk.Spinbox(self.ts_container, from_=0, to=60, textvariable=self.teacher_student_delay,
+                bg='#222', fg='white', width=6).pack(side='left', padx=5)
+
         # Нижняя панель с кнопками
         self.bottom_frame = tk.LabelFrame(main, text="Controls", bg=self.colors['frame_bg'], fg=self.colors['text'],
                                           font=("Helvetica", 12, "bold"), padx=20, pady=15)
@@ -363,14 +397,26 @@ class TetrisSetup:
                     'is_bot': is_bot, 'ai_type': ai_type, 'ai_config': ai_config
                 }
 
-        settings = {'game_mode': self.game_mode.get(), 'players': players, 'custom_ai_config': self.custom_ai_config}
-        if self.game_mode.get() == 'lan':
+        settings = {
+            'game_mode': self.game_mode.get(),
+            'players': players,
+            'custom_ai_config': self.custom_ai_config,
+            'self_learning_iters': self.self_learning_iters.get(),
+            'self_learning_ai': self.self_learning_ai.get().lower(),
+            'teacher_student_delay': self.teacher_student_delay.get(),
+        }
+
+        if self.game_mode.get() in ['lan', 'global']:
             settings['room_name'] = self.room_name_var.get()
             settings['dynamic_keymap'] = {1: self.dynamic_keybinds}
+            # Добавляем сетевые настройки
+            settings['server_host'] = '127.0.0.1' # Можно вынести в UI позже
+            settings['server_port'] = 8888
+            settings['is_host'] = True # Для теста первый запущенный клиент будет хостом
+
         return settings
 
-    def open_custom_ai_settings(self):
-        CustomAISettings(self.root, self.custom_ai_config, self.apply_custom_ai_config)
+    def open_custom_ai_settings(self): CustomAISettings(self.root, self.custom_ai_config, self.apply_custom_ai_config)
 
     def apply_custom_ai_config(self, config):
         self.custom_ai_config = config

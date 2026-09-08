@@ -5,6 +5,7 @@ import pygame
 WIDTH = 15
 HEIGHT = 30
 CELL_SIZE = 10
+MINI_BOARD_WIDTH = 75
 
 # Стандартные цвета фигур (используются для превью, реальный цвет берётся из настроек игрока)
 PIECE_COLORS = {
@@ -70,3 +71,13 @@ DAS_REPEAT = 25      # мс
 
 # Очки за линии
 LINE_SCORES = {1: 100, 2: 250, 3: 500, 4: 1000}
+
+# Режимы игры (расширение)
+GAME_MODES = ['vs', 'coop', '2vs2', 'lan', 'global', 'self_learning', 'teacher_student']
+
+# Настройки Self-Learning
+SELF_LEARNING_DEFAULT_ITERATIONS = 20
+SELF_LEARNING_MUTATION_RATE = 0.05   # ±5% мутация весов
+
+# Настройки Teacher-Student
+TEACHER_STUDENT_DELAY = 5            # тиков задержки ученика
