@@ -1,4 +1,3 @@
-# server.py
 import asyncio
 import json
 import uuid
@@ -8,8 +7,8 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 class TetrisServer:
     def __init__(self):
-        self.rooms = {}  # room_id -> {'host': client_id, 'game_mode': str, 'players': {client_id: player_info}, 'state': {}}
-        self.clients = {}  # client_id -> (reader, writer)
+        self.rooms = {}  
+        self.clients = {}  
 
     async def handle_client(self, reader, writer):
         client_id = str(uuid.uuid4())
@@ -36,30 +35,27 @@ class TetrisServer:
             game_mode = msg.get('game_mode', 'vs')
             self.rooms[room_id] = {
                 'host': client_id,
-                'game_mode': game_mode, # Сохраняем режим комнаты
+                'game_mode': game_mode,
                 'players': {client_id: {**msg.get('player_info', {}), 'is_spectator': False}},
                 'state': {}
             }
             await self.send_to(client_id, {'action': 'room_created', 'room_id': room_id, 'is_host': True, 'is_spectator': False})
             logging.info(f"[*] Комната создана: {room_id}, режим: {game_mode}, хост: {client_id}")
-
+            
         elif action == 'join_room':
             room_id = msg.get('room_id')
             if room_id in self.rooms:
                 room = self.rooms[room_id]
                 is_spectator = False
-
-                # ПРОВЕРКА ЛИМИТА ДЛЯ CO-OP (ОНЛАЙН)
                 if room.get('game_mode') == 'coop' and len(room['players']) >= 8:
                     is_spectator = True
                     logging.info(f"[*] Игрок {client_id} присоединился к CO-OP комнате {room_id} как НАБЛЮДАТЕЛЬ (лимит 8)")
-                elif len(room['players']) >= 17: # Общий технический лимит для других режимов
+                elif len(room['players']) >= 17: 
                     await self.send_to(client_id, {'action': 'error', 'message': 'Комната переполнена (макс. 17 игроков).'})
                     return
-
+                
                 room['players'][client_id] = {**msg.get('player_info', {}), 'is_spectator': is_spectator}
                 is_host = (client_id == room['host'])
-
                 await self.send_to(client_id, {
                     'action': 'room_joined',
                     'room_id': room_id,
@@ -71,14 +67,20 @@ class TetrisServer:
                 logging.info(f"[*] Игрок {client_id} присоединился к комнате {room_id} (spectator={is_spectator})")
             else:
                 await self.send_to(client_id, {'action': 'error', 'message': 'Комната не найдена'})
-
+                
         elif action == 'update_state':
             room_id = msg.get('room_id')
-            # Наблюдатели не должны отправлять состояние, но на всякий случай фильтруем
             if room_id in self.rooms and not self.rooms[room_id]['players'].get(client_id, {}).get('is_spectator'):
-                self.rooms[room_id]['state'][client_id] = msg.get('state')
-                await self.broadcast_room(room_id, {'action': 'state_update', 'state': self.rooms[room_id]['state']})
-
+                self.rooms[room_id]['state'][client_id] = msg.get('state', {})
+                
+                # Формируем плоский словарь состояний всех игроков для удобной отрисовки на клиентах
+                combined_state = {}
+                for cid, states in self.rooms[room_id]['state'].items():
+                    if isinstance(states, dict):
+                        combined_state.update(states)
+                        
+                await self.broadcast_room(room_id, {'action': 'state_update', 'state': combined_state})
+                
         elif action == 'leave_room':
             room_id = msg.get('room_id')
             if room_id in self.rooms:
@@ -103,6 +105,8 @@ class TetrisServer:
             room = self.rooms[room_id]
             if client_id in room['players']:
                 del room['players'][client_id]
+                if client_id in room['state']:
+                    del room['state'][client_id]
                 if not room['players']:
                     del self.rooms[room_id]
                     logging.info(f"[*] Комната {room_id} удалена (пустая)")
