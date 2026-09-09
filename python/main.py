@@ -1,16 +1,19 @@
 import tkinter as tk
 from tkinter import ttk, colorchooser, messagebox, filedialog
 from tkinter.font import Font
+
 import json
 import sqlite3
 import hashlib
 import pygame
 import sys
 import os
+
 from tetris import Game
 from rich.console import Console
 
 console = Console()
+
 
 class Log:
     @staticmethod
@@ -29,26 +32,43 @@ class Log:
     def debug(msg: str, timestamp: bool = True, **kwargs):
         console.print(f"[green]DEBUG[/green]: {msg}")
 
+
 # ================= DATABASE =================
 def init_db():
     conn = sqlite3.connect('tetris_db.sqlite')
     c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS users
-                 (username TEXT PRIMARY KEY, password_hash TEXT)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS leaderboard
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  username TEXT, score INTEGER, is_bot INTEGER, date TEXT)''')
+
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            username TEXT PRIMARY KEY,
+            password_hash TEXT
+        )
+    ''')
+
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS leaderboard (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT,
+            score INTEGER,
+            is_bot INTEGER,
+            date TEXT
+        )
+    ''')
+
     conn.commit()
     conn.close()
 
+
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
+
 
 # ================= AUTH UI =================
 class AuthWindow:
     def __init__(self, root, on_success):
         self.root = root
         self.on_success = on_success
+
         self.root.title("Tetris MP - Вход")
         self.root.geometry("350x300")
         self.root.resizable(False, False)
@@ -59,6 +79,7 @@ class AuthWindow:
 
         self.login_frame = tk.Frame(self.notebook, bg='#111')
         self.register_frame = tk.Frame(self.notebook, bg='#111')
+
         self.notebook.add(self.login_frame, text='Вход')
         self.notebook.add(self.register_frame, text='Регистрация')
 
@@ -67,11 +88,14 @@ class AuthWindow:
 
     def build_login(self):
         f = self.login_frame
+
         tk.Label(f, text="Никнейм:", bg='#111', fg='#eee').pack(pady=(20, 5))
+
         self.login_user = tk.Entry(f, bg='#333', fg='#fff', insertbackground='#fff')
         self.login_user.pack()
 
         tk.Label(f, text="Пароль:", bg='#111', fg='#eee').pack(pady=(10, 5))
+
         self.login_pass = tk.Entry(f, show="*", bg='#333', fg='#fff', insertbackground='#fff')
         self.login_pass.pack()
 
@@ -93,19 +117,29 @@ class AuthWindow:
 
     def build_register(self):
         f = self.register_frame
+
         tk.Label(f, text="Новый никнейм:", bg='#111', fg='#eee').pack(pady=(20, 5))
+
         self.reg_user = tk.Entry(f, bg='#333', fg='#fff', insertbackground='#fff')
         self.reg_user.pack()
 
         tk.Label(f, text="Пароль:", bg='#111', fg='#eee').pack(pady=(10, 5))
+
         self.reg_pass = tk.Entry(f, show="*", bg='#333', fg='#fff', insertbackground='#fff')
         self.reg_pass.pack()
 
-        tk.Button(f, text="Зарегистрироваться", bg='#2d6a4f', fg='#fff', command=self.register_user).pack(pady=15)
+        tk.Button(
+            f,
+            text="Зарегистрироваться",
+            bg='#2d6a4f',
+            fg='#fff',
+            command=self.register_user
+        ).pack(pady=15)
 
     def check_login(self):
         user = self.login_user.get().strip()
         pwd = self.login_pass.get()
+
         if not user or not pwd:
             messagebox.showerror("Ошибка", "Заполните все поля!")
             return
@@ -124,18 +158,23 @@ class AuthWindow:
     def register_user(self):
         user = self.reg_user.get().strip()
         pwd = self.reg_pass.get()
+
         if not user or not pwd:
             messagebox.showerror("Ошибка", "Заполните все поля!")
             return
+
         if len(pwd) < 4:
             messagebox.showerror("Ошибка", "Пароль должен быть минимум 4 символа!")
             return
 
         conn = sqlite3.connect('tetris_db.sqlite')
         c = conn.cursor()
+
         try:
-            c.execute("INSERT INTO users (username, password_hash) VALUES (?, ?)",
-                      (user, hash_password(pwd)))
+            c.execute(
+                "INSERT INTO users (username, password_hash) VALUES (?, ?)",
+                (user, hash_password(pwd))
+            )
             conn.commit()
             messagebox.showinfo("Успех", "Регистрация прошла успешно! Теперь войдите.")
             self.notebook.select(0)
@@ -146,6 +185,7 @@ class AuthWindow:
 
     def login_as_guest(self):
         self.on_success("Guest")
+
 
 # ================= MAIN MENU =================
 class MainMenuWindow:
@@ -164,18 +204,57 @@ class MainMenuWindow:
         self.root.resizable(False, False)
         self.root.configure(bg='#111')
 
-        tk.Label(self.root, text="🎮 TETRIS MP", bg='#111', fg='#e94560',
-                 font=("Helvetica", 24, "bold")).pack(pady=(30, 5))
-        tk.Label(self.root, text=f"Привет, {self.username}!", bg='#111', fg='#eee',
-                 font=("Helvetica", 14)).pack(pady=(0, 30))
+        tk.Label(
+            self.root,
+            text="🎮 TETRIS MP",
+            bg='#111',
+            fg='#e94560',
+            font=("Helvetica", 24, "bold")
+        ).pack(pady=(30, 5))
 
-        btn_style = {'font': ("Helvetica", 12, "bold"), 'width': 20, 'height': 2, 'bd': 0, 'cursor': 'hand2'}
-        tk.Button(self.root, text="▶ Играть", bg='#0f3460', fg='#fff',
-                  command=self.on_play, **btn_style).pack(pady=8)
-        tk.Button(self.root, text="🏆 Таблица лидеров", bg='#533483', fg='#fff',
-                  command=self.on_leaderboard, **btn_style).pack(pady=8)
-        tk.Button(self.root, text="🚪 Выйти из аккаунта", bg='#444', fg='#fff',
-                  command=self.on_logout, **btn_style).pack(pady=8)
+        tk.Label(
+            self.root,
+            text=f"Привет, {self.username}!",
+            bg='#111',
+            fg='#eee',
+            font=("Helvetica", 14)
+        ).pack(pady=(0, 30))
+
+        btn_style = {
+            'font': ("Helvetica", 12, "bold"),
+            'width': 20,
+            'height': 2,
+            'bd': 0,
+            'cursor': 'hand2'
+        }
+
+        tk.Button(
+            self.root,
+            text="▶ Играть",
+            bg='#0f3460',
+            fg='#fff',
+            command=self.on_play,
+            **btn_style
+        ).pack(pady=8)
+
+        tk.Button(
+            self.root,
+            text="🏆 Таблица лидеров",
+            bg='#533483',
+            fg='#fff',
+            command=self.on_leaderboard,
+            **btn_style
+        ).pack(pady=8)
+
+        tk.Button(
+            self.root,
+            text="🚪 Выйти из аккаунта",
+            bg='#444',
+            fg='#fff',
+            command=self.on_logout,
+            **btn_style
+        ).pack(pady=8)
+
 
 # ================= LEADERBOARD UI =================
 class LeaderboardWindow:
@@ -187,11 +266,18 @@ class LeaderboardWindow:
         self.win.transient(parent)
         self.win.grab_set()
 
-        tk.Label(self.win, text="🏆 ТОП-20 ИГРОКОВ", bg='#111', fg='#e94560',
-                 font=("Helvetica", 16, "bold")).pack(pady=10)
+        tk.Label(
+            self.win,
+            text="🏆 ТОП-20 ИГРОКОВ",
+            bg='#111',
+            fg='#e94560',
+            font=("Helvetica", 16, "bold")
+        ).pack(pady=10)
 
         columns = ("place", "username", "score", "is_bot", "date")
+
         self.tree = ttk.Treeview(self.win, columns=columns, show="headings", height=20)
+
         self.tree.heading("place", text="#")
         self.tree.heading("username", text="Никнейм")
         self.tree.heading("score", text="Очки")
@@ -205,6 +291,7 @@ class LeaderboardWindow:
         self.tree.column("date", width=100)
 
         self.tree.pack(fill='both', expand=True, padx=10, pady=5)
+
         self.load_data()
 
     def load_data(self):
@@ -220,10 +307,12 @@ class LeaderboardWindow:
             short_date = date.split('T')[0] if date else ""
             self.tree.insert("", 'end', values=(i, user, score, bot_str, short_date))
 
+
 # ================= SETTINGS UI =================
 class KeybindSettings(tk.Toplevel):
     def __init__(self, master, current_keybinds, on_save_callback):
         super().__init__(master)
+
         self.title("Настройка управления (Игрок 1)")
         self.geometry("320x420")
         self.resizable(False, False)
@@ -234,54 +323,107 @@ class KeybindSettings(tk.Toplevel):
         self.on_save = on_save_callback
         self.keybinds = current_keybinds.copy()
         self.vars = {}
+
         self.build_ui()
 
     def build_ui(self):
-        tk.Label(self, text="⌨️ Настройка клавиш", bg='#000', fg='#e94560',
-                 font=("Helvetica", 16, "bold")).pack(pady=15)
+        tk.Label(
+            self,
+            text="⌨️ Настройка клавиш",
+            bg='#000',
+            fg='#e94560',
+            font=("Helvetica", 16, "bold")
+        ).pack(pady=15)
 
         container = tk.Frame(self, bg='#111')
         container.pack(fill='both', expand=True, padx=15, pady=10)
 
         actions = [
-            ('hard_drop', 'Hard Drop'), ('rotate', 'Поворот'), ('left', 'Влево'),
-            ('right', 'Вправо'), ('soft_drop', 'Soft Drop'), ('hold', 'Hold')
+            ('hard_drop', 'Hard Drop'),
+            ('rotate', 'Поворот'),
+            ('left', 'Влево'),
+            ('right', 'Вправо'),
+            ('soft_drop', 'Soft Drop'),
+            ('hold', 'Hold')
         ]
 
         for action, name in actions:
             frame = tk.Frame(container, bg='#111')
             frame.pack(fill='x', pady=5)
-            tk.Label(frame, text=name, bg='#111', fg='#eeeeee', font=("Helvetica", 11)).pack(side='left')
+
+            tk.Label(
+                frame,
+                text=name,
+                bg='#111',
+                fg='#eeeeee',
+                font=("Helvetica", 11)
+            ).pack(side='left')
 
             val = self.keybinds.get(action, '')
+
             if isinstance(val, int):
-                try: val = pygame.key.name(val)
-                except: val = str(val)
+                try:
+                    val = pygame.key.name(val)
+                except Exception:
+                    val = str(val)
 
             var = tk.StringVar(self, value=val)
             self.vars[action] = var
 
-            btn = tk.Button(frame, textvariable=var, bg='#0f3460', fg='white',
-                            font=("Helvetica", 10), width=12,
-                            command=lambda v=var, a=action: self.record_key(v, a))
+            btn = tk.Button(
+                frame,
+                textvariable=var,
+                bg='#0f3460',
+                fg='white',
+                font=("Helvetica", 10),
+                width=12,
+                command=lambda v=var, a=action: self.record_key(v, a)
+            )
             btn.pack(side='right')
 
         btn_frame = tk.Frame(self, bg='#000')
         btn_frame.pack(pady=15)
-        tk.Button(btn_frame, text="💾 Сохранить", bg='#0f3460', fg='white',
-                  font=("Helvetica", 10, "bold"), command=self.save_and_close).pack(side='left', padx=8)
-        tk.Button(btn_frame, text="🔄 Сбросить", bg='#444', fg='white',
-                  font=("Helvetica", 10, "bold"), command=self.reset_defaults).pack(side='left', padx=8)
-        tk.Button(btn_frame, text="❌ Отмена", bg='#333', fg='white',
-                  font=("Helvetica", 10, "bold"), command=self.destroy).pack(side='left', padx=8)
+
+        tk.Button(
+            btn_frame,
+            text="💾 Сохранить",
+            bg='#0f3460',
+            fg='white',
+            font=("Helvetica", 10, "bold"),
+            command=self.save_and_close
+        ).pack(side='left', padx=8)
+
+        tk.Button(
+            btn_frame,
+            text="🔄 Сбросить",
+            bg='#444',
+            fg='white',
+            font=("Helvetica", 10, "bold"),
+            command=self.reset_defaults
+        ).pack(side='left', padx=8)
+
+        tk.Button(
+            btn_frame,
+            text="❌ Отмена",
+            bg='#333',
+            fg='white',
+            font=("Helvetica", 10, "bold"),
+            command=self.destroy
+        ).pack(side='left', padx=8)
 
     def record_key(self, var, action):
         var.set("Нажмите...")
+
         def on_key(event):
             key_name = event.keysym.lower()
-            if key_name in ['shift_l', 'shift_r']: key_name = 'shift'
-            elif key_name in ['control_l', 'control_r']: key_name = 'ctrl'
-            elif key_name in ['alt_l', 'alt_r']: key_name = 'alt'
+
+            if key_name in ['shift_l', 'shift_r']:
+                key_name = 'shift'
+            elif key_name in ['control_l', 'control_r']:
+                key_name = 'ctrl'
+            elif key_name in ['alt_l', 'alt_r']:
+                key_name = 'alt'
+
             var.set(key_name)
             self.keybinds[action] = key_name
             self.unbind('<Key>')
@@ -291,7 +433,15 @@ class KeybindSettings(tk.Toplevel):
         self.focus_set()
 
     def reset_defaults(self):
-        defaults = {'hard_drop': 'q', 'rotate': 'w', 'left': 'a', 'right': 'd', 'soft_drop': 's', 'hold': 'e'}
+        defaults = {
+            'hard_drop': 'q',
+            'rotate': 'w',
+            'left': 'a',
+            'right': 'd',
+            'soft_drop': 's',
+            'hold': 'e'
+        }
+
         for action, val in defaults.items():
             self.keybinds[action] = val
             self.vars[action].set(val)
@@ -300,9 +450,11 @@ class KeybindSettings(tk.Toplevel):
         self.on_save(self.keybinds)
         self.destroy()
 
+
 class CustomAISettings(tk.Toplevel):
     def __init__(self, master, current_config, on_save_callback):
         super().__init__(master)
+
         self.title("Custom AI Configuration")
         self.geometry("420x680")
         self.resizable(False, False)
@@ -314,11 +466,17 @@ class CustomAISettings(tk.Toplevel):
         self.current_config = current_config.copy()
         self.weights = {}
         self.labels = {}
+
         self.build_ui()
 
     def build_ui(self):
-        tk.Label(self, text="⚙️ Custom AI Heuristics", bg='#000', fg='#e94560',
-                 font=("Helvetica", 16, "bold")).pack(pady=15)
+        tk.Label(
+            self,
+            text="⚙️ Custom AI Heuristics",
+            bg='#000',
+            fg='#e94560',
+            font=("Helvetica", 16, "bold")
+        ).pack(pady=15)
 
         container = tk.Frame(self, bg='#111')
         container.pack(fill='both', expand=True, padx=15, pady=10)
@@ -334,9 +492,24 @@ class CustomAISettings(tk.Toplevel):
         for key, name, desc, default_val in settings:
             frame = tk.Frame(container, bg='#111')
             frame.pack(fill='x', pady=10)
-            tk.Label(frame, text=name, bg='#111', fg='#eeeeee', font=("Helvetica", 11, "bold")).pack(anchor='w')
-            tk.Label(frame, text=desc, bg='#111', fg='#aaaaaa', font=("Helvetica", 8),
-                     wraplength=360, justify='left').pack(anchor='w', pady=(0, 4))
+
+            tk.Label(
+                frame,
+                text=name,
+                bg='#111',
+                fg='#eeeeee',
+                font=("Helvetica", 11, "bold")
+            ).pack(anchor='w')
+
+            tk.Label(
+                frame,
+                text=desc,
+                bg='#111',
+                fg='#aaaaaa',
+                font=("Helvetica", 8),
+                wraplength=360,
+                justify='left'
+            ).pack(anchor='w', pady=(0, 4))
 
             val = self.current_config.get(key, default_val)
             var = tk.DoubleVar(self, value=val)
@@ -344,29 +517,75 @@ class CustomAISettings(tk.Toplevel):
 
             scale_frame = tk.Frame(frame, bg='#111')
             scale_frame.pack(fill='x')
-            tk.Scale(scale_frame, from_=-2.0, to=2.0, resolution=0.01, orient='horizontal',
-                     variable=var, bg='#111', fg='#e94560', troughcolor='#333',
-                     length=300, showvalue=0,
-                     command=lambda v, k=key: self.update_label(k, v)).pack(side='left', fill='x', expand=True)
 
-            lbl = tk.Label(scale_frame, text=f"{val:.2f}", bg='#111', fg='#eeeeee', font=("Helvetica", 9, "bold"), width=5)
+            tk.Scale(
+                scale_frame,
+                from_=-2.0,
+                to=2.0,
+                resolution=0.01,
+                orient='horizontal',
+                variable=var,
+                bg='#111',
+                fg='#e94560',
+                troughcolor='#333',
+                length=300,
+                showvalue=0,
+                command=lambda v, k=key: self.update_label(k, v)
+            ).pack(side='left', fill='x', expand=True)
+
+            lbl = tk.Label(
+                scale_frame,
+                text=f"{val:.2f}",
+                bg='#111',
+                fg='#eeeeee',
+                font=("Helvetica", 9, "bold"),
+                width=5
+            )
             lbl.pack(side='right')
             self.labels[key] = lbl
 
         btn_frame = tk.Frame(self, bg='#000')
         btn_frame.pack(pady=15)
-        tk.Button(btn_frame, text="💾 Save & Apply", bg='#0f3460', fg='white',
-                  font=("Helvetica", 10, "bold"), command=self.save_and_close).pack(side='left', padx=8)
-        tk.Button(btn_frame, text="🔄 Reset", bg='#444', fg='white',
-                  font=("Helvetica", 10, "bold"), command=self.reset_defaults).pack(side='left', padx=8)
-        tk.Button(btn_frame, text="❌ Cancel", bg='#333', fg='white',
-                  font=("Helvetica", 10, "bold"), command=self.destroy).pack(side='left', padx=8)
+
+        tk.Button(
+            btn_frame,
+            text="💾 Save & Apply",
+            bg='#0f3460',
+            fg='white',
+            font=("Helvetica", 10, "bold"),
+            command=self.save_and_close
+        ).pack(side='left', padx=8)
+
+        tk.Button(
+            btn_frame,
+            text="🔄 Reset",
+            bg='#444',
+            fg='white',
+            font=("Helvetica", 10, "bold"),
+            command=self.reset_defaults
+        ).pack(side='left', padx=8)
+
+        tk.Button(
+            btn_frame,
+            text="❌ Cancel",
+            bg='#333',
+            fg='white',
+            font=("Helvetica", 10, "bold"),
+            command=self.destroy
+        ).pack(side='left', padx=8)
 
     def update_label(self, key, value):
         self.labels[key].config(text=f"{float(value):.2f}")
 
     def reset_defaults(self):
-        defaults = {"height": -0.51, "lines": 0.76, "holes": -0.36, "bumpiness": -0.18, "well_depth": -0.15}
+        defaults = {
+            "height": -0.51,
+            "lines": 0.76,
+            "holes": -0.36,
+            "bumpiness": -0.18,
+            "well_depth": -0.15
+        }
+
         for key, var in self.weights.items():
             var.set(defaults[key])
             self.update_label(key, defaults[key])
@@ -376,26 +595,35 @@ class CustomAISettings(tk.Toplevel):
         self.on_save(config)
         self.destroy()
 
+
 # ================= SETUP UI =================
 class TetrisSetup:
     def __init__(self, username="Guest"):
         self.current_user = username
+
         self.root = tk.Tk()
         self.root.title(f"Tetris MP – Setup ({self.current_user})")
         self.root.geometry("850x550")
         self.root.resizable(False, False)
         self.root.configure(bg='#000')
-
-        # Обработчик закрытия окна
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
         self.colors = {
-            'bg': '#000', 'frame_bg': '#111', 'accent': '#e94560',
-            'text': '#eeeeee', 'button': '#0f3460', 'button_hover': '#533483'
+            'bg': '#000',
+            'frame_bg': '#111',
+            'accent': '#e94560',
+            'text': '#eeeeee',
+            'button': '#0f3460',
+            'button_hover': '#533483'
         }
-        self.player_colors = {1: '#FF4444', 2: '#44FF44', 3: '#4444FF', 4: '#FFFF44'}
 
-        # ИСПРАВЛЕНО: Добавлен master=self.root для всех переменных, чтобы они корректно биндились
+        self.player_colors = {
+            1: '#FF4444',
+            2: '#44FF44',
+            3: '#4444FF',
+            4: '#FFFF44'
+        }
+
         self.player_enabled = {i: tk.BooleanVar(self.root, value=True) for i in range(1, 5)}
         self.player_is_bot = {i: tk.BooleanVar(self.root, value=False) for i in range(1, 5)}
 
@@ -418,14 +646,21 @@ class TetrisSetup:
 
         self.game_mode = tk.StringVar(self.root, value="vs")
         self.game_mode.trace_add("write", self._on_mode_change)
+
         self.network_mode = tk.StringVar(self.root, value="local")
         self.network_mode.trace_add("write", self._on_network_mode_change)
+
         self.room_name_var = tk.StringVar(self.root, value="tetris_room")
+        self.server_host_var = tk.StringVar(self.root, value="127.0.0.1")
         self.is_host_var = tk.BooleanVar(self.root, value=True)
 
         self.dynamic_keybinds = {
-            'hard_drop': 'q', 'rotate': 'w', 'left': 'a',
-            'right': 'd', 'soft_drop': 's', 'hold': 'e'
+            'hard_drop': 'q',
+            'rotate': 'w',
+            'left': 'a',
+            'right': 'd',
+            'soft_drop': 's',
+            'hold': 'e'
         }
 
         self.setup_ui()
@@ -438,30 +673,37 @@ class TetrisSetup:
 
     def on_network_mode_change(self):
         mode = self.network_mode.get()
+
         if mode in ['lan', 'online']:
             self.room_name_container.pack(fill='x', pady=10, before=self.bottom_frame)
-            self.host_join_frame.pack(fill='x', pady=(0, 5))   # ✅ показать
+            self.host_join_frame.pack(fill='x', pady=(0, 5))
         else:
             self.room_name_container.pack_forget()
-            self.host_join_frame.pack_forget()                  # ✅ скрыть
+            self.host_join_frame.pack_forget()
+
         self.update_keybind_button()
 
     def on_game_mode_change(self):
         mode = self.game_mode.get()
+
         for w in (self.room_name_container, self.ml_container, self.ts_container):
             w.pack_forget()
 
         if mode in ['lan', 'global']:
             self.room_name_container.pack(fill='x', pady=10, before=self.bottom_frame)
+
         elif mode == 'self_learning':
             self.ml_container.pack(fill='x', pady=10, before=self.bottom_frame)
+
         elif mode == 'teacher_student':
             self.ts_container.pack(fill='x', pady=10, before=self.bottom_frame)
+
             self.player_enabled[1].set(True)
             self.player_enabled[2].set(True)
             self.player_is_bot[1].set(False)
             self.player_is_bot[2].set(True)
             self.player_ai_type[2].set('Student')
+
             for p in range(1, 3):
                 self.update_player_state(p)
 
@@ -469,15 +711,27 @@ class TetrisSetup:
         main = tk.Frame(self.root, bg=self.colors['bg'])
         main.pack(fill='both', expand=True, padx=20, pady=20)
 
-        title = tk.Label(main, text="TETRIS ⬛ SETUP", font=Font(family="Helvetica", size=24, weight="bold"),
-                         bg=self.colors['bg'], fg=self.colors['accent'])
+        title = tk.Label(
+            main,
+            text="TETRIS ⬛ SETUP",
+            font=Font(family="Helvetica", size=24, weight="bold"),
+            bg=self.colors['bg'],
+            fg=self.colors['accent']
+        )
         title.pack(pady=(0, 20))
 
         top = tk.Frame(main, bg=self.colors['bg'])
         top.pack(fill='both', expand=True)
 
-        left = tk.LabelFrame(top, text="Game Mode", bg=self.colors['frame_bg'], fg=self.colors['text'],
-                             font=("Helvetica", 12, "bold"), padx=20, pady=15)
+        left = tk.LabelFrame(
+            top,
+            text="Game Mode",
+            bg=self.colors['frame_bg'],
+            fg=self.colors['text'],
+            font=("Helvetica", 12, "bold"),
+            padx=20,
+            pady=15
+        )
         left.pack(side='left', fill='both', expand=True, padx=(0, 10))
 
         modes = [
@@ -487,10 +741,18 @@ class TetrisSetup:
             ("🧬 Self-Learning", "self_learning"),
             ("🎓 Teacher-Student", "teacher_student")
         ]
+
         for text, value in modes:
-            tk.Radiobutton(left, text=text, variable=self.game_mode, value=value,
-                           bg=self.colors['frame_bg'], fg=self.colors['text'],
-                           selectcolor=self.colors['frame_bg'], font=("Helvetica", 11)).pack(anchor='w', pady=5)
+            tk.Radiobutton(
+                left,
+                text=text,
+                variable=self.game_mode,
+                value=value,
+                bg=self.colors['frame_bg'],
+                fg=self.colors['text'],
+                selectcolor=self.colors['frame_bg'],
+                font=("Helvetica", 11)
+            ).pack(anchor='w', pady=5)
 
         connection_frame = tk.LabelFrame(
             top,
@@ -501,7 +763,6 @@ class TetrisSetup:
             padx=20,
             pady=10
         )
-
         connection_frame.pack(side='left', fill='both', expand=True, padx=(10, 10))
 
         connection_modes = [
@@ -523,30 +784,50 @@ class TetrisSetup:
             ).pack(anchor='w', pady=5)
 
         self.host_join_frame = tk.Frame(connection_frame, bg=self.colors['frame_bg'])
+
         tk.Radiobutton(
-            self.host_join_frame, text="Создать комнату",
-            variable=self.is_host_var, value=True,
-            bg=self.colors['frame_bg'], fg=self.colors['text'],
-            selectcolor=self.colors['frame_bg'], font=("Helvetica", 10)
-        ).pack(anchor='w')
-        tk.Radiobutton(
-            self.host_join_frame, text="Присоединиться",
-            variable=self.is_host_var, value=False,
-            bg=self.colors['frame_bg'], fg=self.colors['text'],
-            selectcolor=self.colors['frame_bg'], font=("Helvetica", 10)
+            self.host_join_frame,
+            text="Создать комнату",
+            variable=self.is_host_var,
+            value=True,
+            bg=self.colors['frame_bg'],
+            fg=self.colors['text'],
+            selectcolor=self.colors['frame_bg'],
+            font=("Helvetica", 10)
         ).pack(anchor='w')
 
-        # ============================================================
-        # PLAYER SETUP
-        # ============================================================
-        right = tk.LabelFrame(top, text="Players Configuration", bg=self.colors['frame_bg'], fg=self.colors['text'],
-                              font=("Helvetica", 12, "bold"), padx=15, pady=10)
+        tk.Radiobutton(
+            self.host_join_frame,
+            text="Присоединиться",
+            variable=self.is_host_var,
+            value=False,
+            bg=self.colors['frame_bg'],
+            fg=self.colors['text'],
+            selectcolor=self.colors['frame_bg'],
+            font=("Helvetica", 10)
+        ).pack(anchor='w')
+
+        right = tk.LabelFrame(
+            top,
+            text="Players Configuration",
+            bg=self.colors['frame_bg'],
+            fg=self.colors['text'],
+            font=("Helvetica", 12, "bold"),
+            padx=15,
+            pady=10
+        )
         right.pack(side='right', fill='both', expand=True, padx=(10, 0))
 
         headers = ["Nick", "On", "Color", "Speed", "Bot", "AI Type"]
+
         for col, h in enumerate(headers):
-            tk.Label(right, text=h, bg=self.colors['frame_bg'], fg=self.colors['accent'],
-                     font=("Helvetica", 10, "bold")).grid(row=0, column=col, padx=5, pady=5)
+            tk.Label(
+                right,
+                text=h,
+                bg=self.colors['frame_bg'],
+                fg=self.colors['accent'],
+                font=("Helvetica", 10, "bold")
+            ).grid(row=0, column=col, padx=5, pady=5)
 
         for p in range(1, 5):
             entry = tk.Entry(right, bg='#222', fg=self.colors['text'], width=10)
@@ -554,40 +835,66 @@ class TetrisSetup:
             entry.grid(row=p, column=0, padx=5, pady=5)
             self.nickname_entries[p] = entry
 
-            cb_en = tk.Checkbutton(right, variable=self.player_enabled[p], bg=self.colors['frame_bg'],
-                                   command=lambda pl=p: self.update_player_state(pl))
+            cb_en = tk.Checkbutton(
+                right,
+                variable=self.player_enabled[p],
+                bg=self.colors['frame_bg'],
+                command=lambda pl=p: self.update_player_state(pl)
+            )
             cb_en.grid(row=p, column=1, padx=5, pady=5)
 
-            btn = tk.Button(right, text="Pick", bg=self.player_colors[p], fg='white',
-                            command=lambda x=p: self.choose_color(x))
+            btn = tk.Button(
+                right,
+                text="Pick",
+                bg=self.player_colors[p],
+                fg='white',
+                command=lambda x=p: self.choose_color(x)
+            )
             btn.grid(row=p, column=2, padx=5, pady=5)
             self.color_buttons[p] = btn
 
             speed_frame = tk.Frame(right, bg=self.colors['frame_bg'])
             speed_frame.grid(row=p, column=3, padx=5, pady=5)
-            
-            lbl = tk.Label(speed_frame, text="5.0", bg=self.colors['frame_bg'], fg=self.colors['text'], font=("Helvetica", 8))
+
+            lbl = tk.Label(
+                speed_frame,
+                text="5.0",
+                bg=self.colors['frame_bg'],
+                fg=self.colors['text'],
+                font=("Helvetica", 8)
+            )
             lbl.pack(anchor='n')
             self.speed_labels[p] = lbl
 
-            # ИСПРАВЛЕНО: Инициализация скорости с явным указанием master
             speed_var = tk.DoubleVar(self.root, value=5.0)
             self.fall_speeds[p] = speed_var
 
-            scale = tk.Scale(speed_frame, from_=0.1, to=10.0, resolution=0.1, orient='horizontal',
-                             variable=speed_var, bg=self.colors['frame_bg'], fg=self.colors['text'],
-                             length=80, showvalue=0,
-                             command=lambda v, pl=p: self.speed_labels[pl].config(text=f"{float(v):.1f}"))
+            scale = tk.Scale(
+                speed_frame,
+                from_=0.1,
+                to=10.0,
+                resolution=0.1,
+                orient='horizontal',
+                variable=speed_var,
+                bg=self.colors['frame_bg'],
+                fg=self.colors['text'],
+                length=80,
+                showvalue=0,
+                command=lambda v, pl=p: self.speed_labels[pl].config(text=f"{float(v):.1f}")
+            )
             scale.set(5.0)
             scale.pack()
             self.speed_scales[p] = scale
 
-            cb_bot = tk.Checkbutton(right, variable=self.player_is_bot[p], bg=self.colors['frame_bg'],
-                                    command=lambda pl=p: self.update_player_state(pl))
+            cb_bot = tk.Checkbutton(
+                right,
+                variable=self.player_is_bot[p],
+                bg=self.colors['frame_bg'],
+                command=lambda pl=p: self.update_player_state(pl)
+            )
             cb_bot.grid(row=p, column=4, padx=5, pady=5)
             self.bot_checkboxes[p] = cb_bot
 
-            # ИСПРАВЛЕНО: Создаем OptionMenu с правильной переменной
             ai_menu = tk.OptionMenu(right, self.player_ai_type[p], "Qwen", "DeepSeek", "Custom")
             ai_menu.config(bg='#222', fg='white', width=8)
             ai_menu.grid(row=p, column=5, padx=5, pady=5)
@@ -597,45 +904,186 @@ class TetrisSetup:
             self.update_player_state(p)
 
         self.room_name_container = tk.Frame(main, bg=self.colors['bg'])
-        tk.Label(self.room_name_container, text="Название комнаты:", bg=self.colors['bg'], fg=self.colors['text'], font=("Helvetica", 12, "bold")).pack(side='left', padx=5)
-        self.room_name_entry = tk.Entry(self.room_name_container, textvariable=self.room_name_var, bg='#222', fg=self.colors['text'], font=("Helvetica", 12), width=20)
+
+        tk.Label(
+            self.room_name_container,
+            text="Название комнаты:",
+            bg=self.colors['bg'],
+            fg=self.colors['text'],
+            font=("Helvetica", 12, "bold")
+        ).pack(side='left', padx=5)
+
+        self.room_name_entry = tk.Entry(
+            self.room_name_container,
+            textvariable=self.room_name_var,
+            bg='#222',
+            fg=self.colors['text'],
+            font=("Helvetica", 12),
+            width=20
+        )
         self.room_name_entry.pack(side='left', padx=5)
 
-        self.keybind_btn = tk.Button(self.room_name_container, text="⌨️ Настроить клавиши", bg='#533483', fg='white', font=("Helvetica", 10, "bold"), command=self.open_keybind_settings)
+        tk.Label(
+            self.room_name_container,
+            text="Хост:",
+            bg=self.colors['bg'],
+            fg=self.colors['text'],
+            font=("Helvetica", 12, "bold")
+        ).pack(side='left', padx=(15, 5))
+
+        self.server_host_entry = tk.Entry(
+            self.room_name_container,
+            textvariable=self.server_host_var,
+            bg='#222',
+            fg=self.colors['text'],
+            font=("Helvetica", 12),
+            width=15
+        )
+        self.server_host_entry.pack(side='left', padx=5)
+
+        self.keybind_btn = tk.Button(
+            self.room_name_container,
+            text="⌨️ Настроить клавиши",
+            bg='#533483',
+            fg='white',
+            font=("Helvetica", 10, "bold"),
+            command=self.open_keybind_settings
+        )
         self.keybind_btn.pack(side='left', padx=15)
 
         self.ml_container = tk.Frame(main, bg=self.colors['bg'])
-        tk.Label(self.ml_container, text="Итераций:", bg=self.colors['bg'],
-                 fg=self.colors['text'], font=("Helvetica", 11)).pack(side='left', padx=5)
-        tk.Spinbox(self.ml_container, from_=1, to=500, textvariable=self.self_learning_iters,
-                   bg='#222', fg='white', width=6).pack(side='left', padx=5)
-        tk.Label(self.ml_container, text="AI:", bg=self.colors['bg'],
-                 fg=self.colors['text'], font=("Helvetica", 11)).pack(side='left', padx=(15, 5))
-        tk.OptionMenu(self.ml_container, self.self_learning_ai,
-                      "Custom", "Qwen", "DeepSeek").pack(side='left')
+
+        tk.Label(
+            self.ml_container,
+            text="Итераций:",
+            bg=self.colors['bg'],
+            fg=self.colors['text'],
+            font=("Helvetica", 11)
+        ).pack(side='left', padx=5)
+
+        tk.Spinbox(
+            self.ml_container,
+            from_=1,
+            to=500,
+            textvariable=self.self_learning_iters,
+            bg='#222',
+            fg='white',
+            width=6
+        ).pack(side='left', padx=5)
+
+        tk.Label(
+            self.ml_container,
+            text="AI:",
+            bg=self.colors['bg'],
+            fg=self.colors['text'],
+            font=("Helvetica", 11)
+        ).pack(side='left', padx=(15, 5))
+
+        tk.OptionMenu(
+            self.ml_container,
+            self.self_learning_ai,
+            "Custom",
+            "Qwen",
+            "DeepSeek"
+        ).pack(side='left')
 
         self.ts_container = tk.Frame(main, bg=self.colors['bg'])
-        tk.Label(self.ts_container, text="Задержка ученика (тики):",
-                 bg=self.colors['bg'], fg=self.colors['text'], font=("Helvetica", 11)).pack(side='left', padx=5)
-        tk.Spinbox(self.ts_container, from_=0, to=60, textvariable=self.teacher_student_delay,
-                   bg='#222', fg='white', width=6).pack(side='left', padx=5)
 
-        self.bottom_frame = tk.LabelFrame(main, text="Controls", bg=self.colors['frame_bg'], fg=self.colors['text'],
-                                          font=("Helvetica", 12, "bold"), padx=20, pady=15)
+        tk.Label(
+            self.ts_container,
+            text="Задержка ученика (тики):",
+            bg=self.colors['bg'],
+            fg=self.colors['text'],
+            font=("Helvetica", 11)
+        ).pack(side='left', padx=5)
+
+        tk.Spinbox(
+            self.ts_container,
+            from_=0,
+            to=60,
+            textvariable=self.teacher_student_delay,
+            bg='#222',
+            fg='white',
+            width=6
+        ).pack(side='left', padx=5)
+
+        self.bottom_frame = tk.LabelFrame(
+            main,
+            text="Controls",
+            bg=self.colors['frame_bg'],
+            fg=self.colors['text'],
+            font=("Helvetica", 12, "bold"),
+            padx=20,
+            pady=15
+        )
         self.bottom_frame.pack(fill='x', pady=(20, 0))
 
         btn_frame = tk.Frame(self.bottom_frame, bg=self.colors['frame_bg'])
         btn_frame.pack()
 
-        style = {'font': ("Helvetica", 11, "bold"), 'padx': 15, 'pady': 8, 'bd': 2}
-        tk.Button(btn_frame, text="Start Game", bg=self.colors['button'], fg='white', command=self.start_game, **style).pack(side='left', padx=5)
-        tk.Button(btn_frame, text="Save Settings", bg='#2d6a4f', fg='white', command=self.save_settings, **style).pack(side='left', padx=5)
-        tk.Button(btn_frame, text="Load Settings", bg='#2d6a4f', fg='white', command=self.load_settings, **style).pack(side='left', padx=5)
-        tk.Button(btn_frame, text="🏆 Таблица Лидеров", bg='#533483', fg='white', command=self.show_leaderboard, **style).pack(side='left', padx=5)
-        tk.Button(btn_frame, text="🤖 Custom AI", bg='#533483', fg='white', command=self.open_custom_ai_settings, **style).pack(side='left', padx=5)
-        tk.Button(btn_frame, text="Exit", bg='#dc3545', fg='white', command=self.exit_game, **style).pack(side='left', padx=5)
+        style = {
+            'font': ("Helvetica", 11, "bold"),
+            'padx': 15,
+            'pady': 8,
+            'bd': 2
+        }
+
+        tk.Button(
+            btn_frame,
+            text="Start Game",
+            bg=self.colors['button'],
+            fg='white',
+            command=self.start_game,
+            **style
+        ).pack(side='left', padx=5)
+
+        tk.Button(
+            btn_frame,
+            text="Save Settings",
+            bg='#2d6a4f',
+            fg='white',
+            command=self.save_settings,
+            **style
+        ).pack(side='left', padx=5)
+
+        tk.Button(
+            btn_frame,
+            text="Load Settings",
+            bg='#2d6a4f',
+            fg='white',
+            command=self.load_settings,
+            **style
+        ).pack(side='left', padx=5)
+
+        tk.Button(
+            btn_frame,
+            text="🏆 Таблица Лидеров",
+            bg='#533483',
+            fg='white',
+            command=self.show_leaderboard,
+            **style
+        ).pack(side='left', padx=5)
+
+        tk.Button(
+            btn_frame,
+            text="🤖 Custom AI",
+            bg='#533483',
+            fg='white',
+            command=self.open_custom_ai_settings,
+            **style
+        ).pack(side='left', padx=5)
+
+        tk.Button(
+            btn_frame,
+            text="Exit",
+            bg='#dc3545',
+            fg='white',
+            command=self.exit_game,
+            **style
+        ).pack(side='left', padx=5)
 
         self.on_game_mode_change()
+        self.on_network_mode_change()
 
     def show_leaderboard(self):
         LeaderboardWindow(self.root)
@@ -643,6 +1091,7 @@ class TetrisSetup:
     def update_player_state(self, player):
         is_enabled = self.player_enabled[player].get()
         is_bot = self.player_is_bot[player].get()
+
         state = 'normal' if is_enabled else 'disabled'
 
         self.color_buttons[player].config(state=state)
@@ -655,6 +1104,7 @@ class TetrisSetup:
             self.ai_menus[player].config(state='normal')
         else:
             self.ai_menus[player].config(state='disabled')
+
         self.update_keybind_button()
 
     def update_keybind_button(self):
@@ -666,13 +1116,16 @@ class TetrisSetup:
         if self.network_mode.get() in ['lan', 'online'] and enabled_players > 1:
             if hasattr(self, 'keybind_btn'):
                 self.keybind_btn.config(state='disabled')
-
         else:
             if hasattr(self, 'keybind_btn'):
                 self.keybind_btn.config(state='normal')
 
     def choose_color(self, player):
-        color = colorchooser.askcolor(title=f"Player {player} color", color=self.player_colors[player])
+        color = colorchooser.askcolor(
+            title=f"Player {player} color",
+            color=self.player_colors[player]
+        )
+
         if color[1]:
             self.player_colors[player] = color[1]
             self.color_buttons[player].config(bg=color[1])
@@ -686,15 +1139,21 @@ class TetrisSetup:
 
     def get_settings(self):
         players = {}
+
         for p in range(1, 5):
             if self.player_enabled[p].get():
                 is_bot = self.player_is_bot[p].get()
                 ai_type = self.player_ai_type[p].get().lower() if is_bot else None
                 ai_config = self.custom_ai_config if ai_type == 'custom' else {}
+
                 players[p] = {
-                    'enabled': True, 'nickname': self.nickname_entries[p].get(),
-                    'color': self.player_colors[p], 'speed': self.fall_speeds[p].get(),
-                    'is_bot': is_bot, 'ai_type': ai_type, 'ai_config': ai_config
+                    'enabled': True,
+                    'nickname': self.nickname_entries[p].get(),
+                    'color': self.player_colors[p],
+                    'speed': self.fall_speeds[p].get(),
+                    'is_bot': is_bot,
+                    'ai_type': ai_type,
+                    'ai_config': ai_config
                 }
 
         settings = {
@@ -713,25 +1172,17 @@ class TetrisSetup:
 
         if self.network_mode.get() in ['lan', 'online']:
             settings['network_mode'] = self.network_mode.get()
-            settings['room_name'] = self.room_name_var.get()
+            settings['room_name'] = self.room_name_var.get().strip() or "tetris_room"
             settings['server_port'] = 8888
-            settings['is_host'] = self.is_host_var.get()   # ✅ БЫЛО: True
-
-            if self.network_mode.get() == 'lan':
-                settings['server_host'] = '127.0.0.1'
-
-            else:
-                settings['server_host'] = '127.0.0.1'
+            settings['is_host'] = self.is_host_var.get()
+            settings['server_host'] = self.server_host_var.get().strip() or "127.0.0.1"
 
             if enabled_players > 1:
                 settings['dynamic_keymap'] = {}
-
             else:
                 settings['dynamic_keymap'] = {1: self.dynamic_keybinds}
-
         else:
             settings['network_mode'] = 'local'
-            #settings['dynamic_keymap'] = {1: self.dynamic_keybinds}
 
         return settings
 
@@ -745,63 +1196,85 @@ class TetrisSetup:
     def start_game(self):
         settings = self.get_settings()
         settings['current_user'] = self.current_user
+
         if not settings['players']:
             messagebox.showwarning("No players", "Enable at least one player!")
             return
+
         self.root.withdraw()
+
         try:
             game = Game(settings)
             game.run()
         except Exception as e:
             Log.error(f"Критическая ошибка игры: {e}")
         finally:
-            # ✅ Гарантированно уничтожаем окно настроек
             try:
                 self.root.destroy()
             except tk.TclError:
                 pass
 
     def save_settings(self):
-        file = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON files", "*.json")])
+        file = filedialog.asksaveasfilename(
+            defaultextension=".json",
+            filetypes=[("JSON files", "*.json")]
+        )
+
         if file:
             with open(file, 'w') as f:
                 json.dump(self.get_settings(), f, indent=2)
 
     def load_settings(self):
         file = filedialog.askopenfilename(filetypes=[("JSON files", "*.json")])
-        if not file: return
+
+        if not file:
+            return
 
         try:
             with open(file, 'r') as f:
                 data = json.load(f)
 
             Log.info("Файл настроек прочитан успешно.")
+
             self.game_mode.set(data['game_mode'])
 
             if 'custom_ai_config' in data:
                 self.custom_ai_config = data['custom_ai_config']
+
             if 'dynamic_keymap' in data and 1 in data['dynamic_keymap']:
                 self.dynamic_keybinds = data['dynamic_keymap'][1]
 
+            if 'server_host' in data:
+                self.server_host_var.set(data['server_host'])
+
+            if 'room_name' in data:
+                self.room_name_var.set(data['room_name'])
+
             for p_str, pdata in data['players'].items():
                 p = int(p_str)
+
                 if 1 <= p <= 4:
                     self.player_enabled[p].set(pdata.get('enabled', True))
+
                     self.nickname_entries[p].delete(0, tk.END)
                     self.nickname_entries[p].insert(0, pdata.get('nickname', f'Player{p}'))
+
                     self.player_colors[p] = pdata['color']
                     self.color_buttons[p].config(bg=pdata['color'])
-                    
+
                     self.fall_speeds[p].set(pdata['speed'])
                     self.speed_scales[p].set(pdata['speed'])
                     self.speed_labels[p].config(text=f"{pdata['speed']:.1f}")
 
                     is_bot = pdata.get('is_bot', False)
                     self.player_is_bot[p].set(is_bot)
+
                     if is_bot and 'ai_type' in pdata:
                         ai_val = pdata['ai_type'].capitalize()
+
                         if ai_val in ['Qwen', 'Deepseek', 'Custom']:
                             self.player_ai_type[p].set(ai_val)
+
         except Exception as e:
             Log.error(f"Ошибка при загрузке настроек: {e}")
             messagebox.showerror("Load Error", str(e))
@@ -809,7 +1282,10 @@ class TetrisSetup:
 
         for p in range(1, 5):
             self.update_player_state(p)
+
         self.on_game_mode_change()
+        self.on_network_mode_change()
+
         Log.info("Настройки успешно применены к UI.")
 
     def exit_game(self):
@@ -818,15 +1294,18 @@ class TetrisSetup:
 
     def on_closing(self):
         Log.info("Завершение работы...")
+
         try:
             self.root.quit()
             self.root.destroy()
         except Exception:
             pass
+
         os._exit(0)
 
     def run(self):
         self.root.mainloop()
+
 
 # ================= APP CONTROLLER =================
 class App:
@@ -835,6 +1314,7 @@ class App:
         self.root.geometry("350x300")
         self.root.configure(bg='#111')
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+
         self.current_user = None
         self.show_auth()
 
@@ -851,6 +1331,7 @@ class App:
     def show_main_menu(self):
         self.root.title(f"Tetris MP - Главное меню")
         self.root.geometry("400x350")
+
         MainMenuWindow(
             self.root,
             username=self.current_user,
@@ -861,8 +1342,10 @@ class App:
 
     def start_setup(self):
         self.root.withdraw()
+
         setup = TetrisSetup(username=self.current_user)
         self.root.wait_window(setup.root)
+
         self.root.deiconify()
         self.show_main_menu()
 
@@ -875,14 +1358,14 @@ class App:
         self.show_auth()
 
     def on_closing(self):
-        """Корректное завершение работы"""
         Log.info("Завершение работы...")
         self.root.quit()
         self.root.destroy()
-        os._exit(0)  # Жесткий выход
+        os._exit(0)
 
     def run(self):
         self.root.mainloop()
+
 
 # ================= MAIN EXECUTION =================
 if __name__ == "__main__":
