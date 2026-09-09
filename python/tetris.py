@@ -519,7 +519,7 @@ class Game:
         self.remote_player_boards = {}
         self.network_client = None
 
-        if self.game_mode in ['lan', 'global']:
+        if self.game_mode in ['lan', 'global'] or self.settings.get('network_mode') in ['lan', 'online']:
             host = settings.get('server_host', '127.0.0.1')
             port = settings.get('server_port', 8888)
             room_name = settings.get('room_name', 'default_room')
@@ -559,15 +559,21 @@ class Game:
             self.board_width_px, self.board_height_px = board_px_w, board_px_h
             self.team_positions = [(spacing, info_top + spacing), (spacing + board_px_w + spacing, info_top + spacing)]
             return self.team_positions
-        elif self.game_mode in ['lan', 'global']:
+        elif self.game_mode in ['lan', 'global', 'multiplayer'] or self.settings.get('network_mode') in ['lan', 'online']:
+            board_px_w = WIDTH * CELL_SIZE
+            board_px_h = HEIGHT * CELL_SIZE
+
             mini_w = 100
-            info_w = 130  # Место для UI других игроков
+            info_w = 150
             side_gap = 20
             spacing = 20
+
             total_w = (mini_w + info_w) + side_gap + board_px_w + side_gap + (mini_w + info_w) + spacing
-            total_h = board_px_h + 50
+            total_h = board_px_h + 120
+
             self.layout_width, self.layout_height = total_w, total_h
             self.board_width_px, self.board_height_px = board_px_w, board_px_h
+
             return []
         else:
             cols = min(self.num_players, 4)
@@ -587,62 +593,78 @@ class Game:
         if self.game_mode == 'self_learning':
             pygame.quit()
             return
-
-        while self.running:
-            dt = self.clock.tick(60)
-            current_time = time.time()
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    self.running = False
-                elif event.type == pygame.KEYDOWN:
-                    if event.key in (pygame.K_p, pygame.K_SPACE, pygame.K_ESCAPE):
-                        self.paused = not self.paused
-                    elif not self.paused and not self.is_spectator:
-                        self.handle_keydown(event.key)
-                elif event.type == pygame.KEYUP:
-                    if not self.paused and not self.is_spectator:
-                        self.handle_keyup(event.key)
-                elif event.type == pygame.MOUSEBUTTONDOWN and self.paused:
-                    mouse_pos = pygame.mouse.get_pos()
-
-                    if hasattr(self, "btn_resume") and self.btn_resume.collidepoint(mouse_pos):
-                        self.paused = False
-
-                    elif hasattr(self, "btn_quit") and self.btn_quit.collidepoint(mouse_pos):
+        try:
+            while self.running:
+                dt = self.clock.tick(60)
+                current_time = time.time()
+                for event in pygame.event.get():
+                    if event.type == pygame.QUIT:
                         self.running = False
+                    elif event.type == pygame.KEYDOWN:
+                        if event.key in (pygame.K_p, pygame.K_SPACE, pygame.K_ESCAPE):
+                            self.paused = not self.paused
+                        elif not self.paused and not self.is_spectator:
+                            self.handle_keydown(event.key)
+                    elif event.type == pygame.KEYUP:
+                        if not self.paused and not self.is_spectator:
+                            self.handle_keyup(event.key)
+                    elif event.type == pygame.MOUSEBUTTONDOWN and self.paused:
+                        mouse_pos = pygame.mouse.get_pos()
+                        if hasattr(self, "btn_resume") and self.btn_resume.collidepoint(mouse_pos):
+                            self.paused = False
+                        elif hasattr(self, "btn_quit") and self.btn_quit.collidepoint(mouse_pos):
+                            self.running = False
 
-            if not self.paused:
-                for player in self.players:
-                    if not getattr(player, 'is_spectator', False):
-                        player.update(dt, current_time)
-                self.check_game_over()
-
-            if self.network_client:
-                self.remote_player_boards = dict(self.network_client.remote_players)
                 if not self.paused:
-                    # Расширенный пакет данных для отрисовки UI у других игроков
-                    local_state = {
-                        str(p.id): {
-                            'score': p.board.score,
-                            'lines': p.board.lines_cleared_total,
-                            'alive': p.alive,
-                            'grid': [[1 if cell is not None else 0 for cell in row] for row in p.board.grid],
-                            'next_shape': p.next_pieces[0].shape_name if p.next_pieces else None,
-                            'next_color': f"#{p.next_pieces[0].color.r:02x}{p.next_pieces[0].color.g:02x}{p.next_pieces[0].color.b:02x}" if p.next_pieces else "#FFFFFF",
-                            'hold_shape': p.hold_piece.shape_name if p.hold_piece else None,
-                            'hold_color': f"#{p.hold_piece.color.r:02x}{p.hold_piece.color.g:02x}{p.hold_piece.color.b:02x}" if p.hold_piece else "#FFFFFF",
-                            'level': p.level,
-                            'speed': min(10.0, p.speed + (p.level - 1) * 0.15),
-                            'time': int((p.game_over_time - self.start_time) if (not p.alive and p.game_over_time) else (time.time() - self.start_time))
-                        } for p in self.players if not p.is_bot
-                    }
-                    self.network_client.send_state(local_state)
+                    for player in self.players:
+                        if not getattr(player, 'is_spectator', False):
+                            player.update(dt, current_time)
+                    self.check_game_over()
 
-            self.draw()
-            if self.paused: self.draw_pause_overlay()
-            pygame.display.flip()
+                if self.network_client:
+                    self.remote_player_boards = dict(self.network_client.remote_players)
+                    if not self.paused:
+                        local_state = {
+                            str(p.id): {
+                                'nickname': p.nickname,
+                                'color': f"#{p.color.r:02x}{p.color.g:02x}{p.color.b:02x}",
+                                'score': p.board.score,
+                                'lines': p.board.lines_cleared_total,
+                                'alive': p.alive,
+                                'level': p.level,
+                                'speed': min(10.0, p.speed + (p.level - 1) * 0.15),
+                                'time': int((p.game_over_time - self.start_time)
+                                            if (not p.alive and p.game_over_time)
+                                            else (time.time() - self.start_time)),
+                                'grid': [[1 if cell is not None else 0 for cell in row]
+                                        for row in p.board.grid],
+                                'next_shape': p.next_pieces[0].shape_name if p.next_pieces else None,
+                                'next_color': (f"#{p.next_pieces[0].color.r:02x}"
+                                            f"{p.next_pieces[0].color.g:02x}"
+                                            f"{p.next_pieces[0].color.b:02x}"
+                                            if p.next_pieces else "#FFFFFF"),
+                                'hold_shape': p.hold_piece.shape_name if p.hold_piece else None,
+                                'hold_color': (f"#{p.hold_piece.color.r:02x}"
+                                            f"{p.hold_piece.color.g:02x}"
+                                            f"{p.hold_piece.color.b:02x}"
+                                            if p.hold_piece else "#FFFFFF")
+                            }
+                            for p in self.players if not p.is_bot
+                        }
+                        self.network_client.send_state(local_state)
 
-        pygame.quit()
+                self.draw()
+                if self.paused:
+                    self.draw_pause_overlay()
+                pygame.display.flip()
+        finally:
+            # ✅ Порядок критичен: сначала сеть, потом pygame
+            if self.network_client:
+                self.network_client.stop()
+                self.network_client = None       # разрываем ссылку
+            pygame.display.quit()                # закрываем окно
+            pygame.quit()                        # очищаем модули
+            Log.info("🛑 Игра остановлена, ресурсы освобождены.")
 
     def handle_keydown(self, key):
         for player in self.players:
@@ -690,7 +712,8 @@ class Game:
 
     def draw(self):
         self.screen.fill((30,30,30))
-        if self.game_mode in ['lan', 'global']: self.draw_network()
+        if self.game_mode in ['lan', 'global'] or self.settings.get('network_mode') in ['lan', 'online']:
+            self.draw_network()
         elif self.game_mode == 'coop': self.draw_coop()
         elif self.game_mode == '2vs2': self.draw_2vs2()
         else: self.draw_vs()
@@ -741,45 +764,48 @@ class Game:
             self.screen.blit(nick_surf, (x, y - 12))
 
     def draw_network(self):
-        if not self.players: return
+        if not self.players:
+            return
+        local_ids = {str(p.id) for p in self.players}
         local_player = next((p for p in self.players if not p.is_bot), self.players[0])
-        
+
+        # ✅ Единственный блок формирования others
+        others = []
+        for p in self.players:
+            if p != local_player:
+                others.append(('local', p, None))
+        for pid, pdata in self.remote_player_boards.items():
+            suffix = pid.split(':')[-1] if ':' in pid else pid
+            if suffix not in local_ids:
+                others.append(('remote', pid, pdata))
+
+        # --- Отрисовка своего поля ---
         main_x = (self.layout_width - self.board_width_px) // 2
-        main_y = (self.layout_height - self.board_height_px) // 2
-        
+        main_y = max(20, (self.layout_height - self.board_height_px) // 2)
         self.draw_board(local_player.board, main_x, main_y, local_player)
-        
-        # Отрисовка UI для локального игрока в онлайн-режиме
         info_x = main_x
         info_y = main_y + self.board_height_px + 10
         self.draw_player_info(local_player, info_x, info_y)
 
-        local_ids = {str(p.id) for p in self.players}
-        others = []
-        for p in self.players:
-            if p != local_player: others.append(('local', p, None))
-        for pid, pdata in self.remote_player_boards.items():
-            if pid not in local_ids: others.append(('remote', pid, pdata))
+        # ✅ ВТОРОЙ БЛОК УДАЛЁН — он перезаписывал others
 
+        # --- Отрисовка чужих полей ---
         mini_w = 100
-        info_w = 130
+        info_w = 150
         side_gap = 20
-        
-        left_x = main_x - side_gap - mini_w - info_w
-        right_x = main_x + self.board_width_px + side_gap
-
+        left_x = max(10, main_x - side_gap - mini_w - info_w)
+        right_x = min(self.layout_width - mini_w - info_w - 10,
+                    main_x + self.board_width_px + side_gap)
         count_left = min(8, len(others))
         count_right = min(8, max(0, len(others) - 8))
         max_per_side = max(count_left, count_right, 1)
-        mini_h = min(150, self.board_height_px // max_per_side)
-
+        available_height = self.layout_height - main_y - 20
+        mini_h = min(150, max(40, available_height // max_per_side))
         for i, item in enumerate(others):
             if i < 8:
-                y = main_y + i * mini_h
-                self._draw_other_player(item, left_x, y, mini_h)
+                self._draw_other_player(item, left_x, main_y + i * mini_h, mini_h)
             elif i < 16:
-                y = main_y + (i - 8) * mini_h
-                self._draw_other_player(item, right_x, y, mini_h)
+                self._draw_other_player(item, right_x, main_y + (i - 8) * mini_h, mini_h)
 
     def _draw_other_player(self, item, x, y, mini_h):
         kind, payload, pdata = item
@@ -793,38 +819,48 @@ class Game:
         grid = pdata.get('grid') or []
         color_str = pdata.get('color', '#FFFFFF')
         nickname = pdata.get('nickname', 'Remote')
+
         color = self._parse_hex_color(color_str)
 
         mini_cell_x = MINI_BOARD_WIDTH / WIDTH
         mini_cell_y = mini_h / HEIGHT
+
         w = int(mini_cell_x * WIDTH)
         h = int(mini_cell_y * HEIGHT)
-        
+
         pygame.draw.rect(self.screen, (80, 80, 80), (x - 1, y - 1, w + 2, h + 2), 1)
+
         for row in range(min(len(grid), HEIGHT)):
             row_data = grid[row]
+
             for col in range(min(len(row_data), WIDTH)):
                 if row_data[col]:
-                    rect = pygame.Rect(x + int(col * mini_cell_x), y + int(row * mini_cell_y), max(1, int(mini_cell_x)), max(1, int(mini_cell_y)))
+                    rect = pygame.Rect(
+                        x + int(col * mini_cell_x),
+                        y + int(row * mini_cell_y),
+                        max(1, int(mini_cell_x)),
+                        max(1, int(mini_cell_y))
+                    )
                     pygame.draw.rect(self.screen, color, rect)
 
-        # Отрисовка UI для удаленного игрока
         text_x = x + w + 10
         text_y = y
-        
+
         self.screen.blit(self.small_font.render(str(nickname)[:12], True, color), (text_x, text_y))
-        self.screen.blit(self.small_font.render(f"Score: {pdata.get('score', 0)}", True, (255,255,255)), (text_x, text_y + 20))
-        self.screen.blit(self.small_font.render(f"Lines: {pdata.get('lines', 0)}", True, (200,200,200)), (text_x, text_y + 38))
-        
+        self.screen.blit(self.small_font.render(f"Score: {pdata.get('score', 0)}", True, (255, 255, 255)), (text_x, text_y + 20))
+        self.screen.blit(self.small_font.render(f"Lines: {pdata.get('lines', 0)}", True, (200, 200, 200)), (text_x, text_y + 38))
+
         time_val = pdata.get('time', 0)
-        self.screen.blit(self.small_font.render(f"Time: {time_val}s", True, (255,255,255)), (text_x, text_y + 56))
-        
-        self.screen.blit(self.small_font.render("Next:", True, (255,255,255)), (text_x, text_y + 80))
+        self.screen.blit(self.small_font.render(f"Time: {time_val}s", True, (255, 255, 255)), (text_x, text_y + 56))
+
+        self.screen.blit(self.small_font.render("Next:", True, (255, 255, 255)), (text_x, text_y + 80))
+
         if pdata.get('next_shape'):
             next_color = self._parse_hex_color(pdata.get('next_color', '#FFFFFF'))
             self._draw_remote_piece_preview(pdata['next_shape'], next_color, text_x + 45, text_y + 82)
-            
-        self.screen.blit(self.small_font.render("Hold:", True, (255,255,255)), (text_x, text_y + 105))
+
+        self.screen.blit(self.small_font.render("Hold:", True, (255, 255, 255)), (text_x, text_y + 105))
+
         if pdata.get('hold_shape'):
             hold_color = self._parse_hex_color(pdata.get('hold_color', '#FFFFFF'))
             self._draw_remote_piece_preview(pdata['hold_shape'], hold_color, text_x + 45, text_y + 107)
@@ -988,12 +1024,27 @@ class NetworkClient:
         if action in ('room_created', 'room_joined'):
             self.room_id = msg.get('room_id')
             self.is_spectator = msg.get('is_spectator', False)
-            self.remote_players = msg.get('players', {})
+            for pid, pinfo in msg.get('players', {}).items():
+                if pid not in self.remote_players:
+                    self.remote_players[pid] = pinfo
         elif action == 'state_update':
-            # Сервер теперь присылает уже плоский словарь {player_id: data}
-            self.remote_players = msg.get('state', {})
+            incoming = msg.get('state', {})
+            self.remote_players.update(incoming)
         elif action in ('player_joined', 'player_left'):
-            self.remote_players = msg.get('players', {})
+            players = msg.get('players', {})
+            if action == 'player_joined':
+                for pid, pinfo in players.items():
+                    if pid not in self.remote_players:
+                        self.remote_players[pid] = pinfo
+            else:
+                self.remote_players = {
+                    k: v for k, v in self.remote_players.items() if k in players
+                }
+        # ✅ НОВОЕ: обработка ошибки от сервера
+        elif action == 'error':
+            self.connection_status = 'failed'
+            self.connection_error = msg.get('message', 'Unknown error')
+            Log.error(f"🌐 Ошибка сервера: {self.connection_error}")
 
     def send_state(self, state: Dict[str, Any]) -> None:
         if self._loop and self._running and self.room_id and not self.is_spectator:
@@ -1009,8 +1060,36 @@ class NetworkClient:
                 pass
 
     def stop(self) -> None:
+        if self._thread is None:
+            return
         self._running = False
-        if self._loop:
+
+        # 1) Закрываем writer → сервер получает EOF → readline() возвращает b''
+        if self._loop and self._writer:
+            try:
+                asyncio.run_coroutine_threadsafe(self._shutdown_writer(), self._loop)
+            except RuntimeError:
+                pass
+
+        # 2) Даём потоку 2 секунды на завершение
+        if self._thread.is_alive():
+            self._thread.join(timeout=2.0)
+
+        # 3) Если поток всё ещё жив — останавливаем цикл принудительно
+        if self._thread.is_alive() and self._loop and not self._loop.is_closed():
             self._loop.call_soon_threadsafe(self._loop.stop)
-        if self._thread:
             self._thread.join(timeout=1.0)
+
+        if self._thread.is_alive():
+            Log.warning("⚠️ Network-поток не завершился за 3с")
+
+        self._thread = None
+        self._writer = None
+
+    async def _shutdown_writer(self):
+        try:
+            if self._writer:
+                self._writer.close()
+                await self._writer.wait_closed()
+        except Exception:
+            pass

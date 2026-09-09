@@ -75,7 +75,21 @@ class AuthWindow:
         self.login_pass = tk.Entry(f, show="*", bg='#333', fg='#fff', insertbackground='#fff')
         self.login_pass.pack()
 
-        tk.Button(f, text="Войти", bg='#0f3460', fg='#fff', command=self.check_login).pack(pady=15)
+        tk.Button(
+            f,
+            text="Войти",
+            bg='#0f3460',
+            fg='#fff',
+            command=self.check_login
+        ).pack(pady=15)
+
+        tk.Button(
+            f,
+            text="Продолжить как гость",
+            bg='#444',
+            fg='#fff',
+            command=self.login_as_guest
+        ).pack(pady=5)
 
     def build_register(self):
         f = self.register_frame
@@ -129,6 +143,9 @@ class AuthWindow:
             messagebox.showerror("Ошибка", "Такой никнейм уже занят!")
         finally:
             conn.close()
+
+    def login_as_guest(self):
+        self.on_success("Guest")
 
 # ================= MAIN MENU =================
 class MainMenuWindow:
@@ -401,7 +418,10 @@ class TetrisSetup:
 
         self.game_mode = tk.StringVar(self.root, value="vs")
         self.game_mode.trace_add("write", self._on_mode_change)
+        self.network_mode = tk.StringVar(self.root, value="local")
+        self.network_mode.trace_add("write", self._on_network_mode_change)
         self.room_name_var = tk.StringVar(self.root, value="tetris_room")
+        self.is_host_var = tk.BooleanVar(self.root, value=True)
 
         self.dynamic_keybinds = {
             'hard_drop': 'q', 'rotate': 'w', 'left': 'a',
@@ -412,6 +432,19 @@ class TetrisSetup:
 
     def _on_mode_change(self, *args):
         self.on_game_mode_change()
+
+    def _on_network_mode_change(self, *args):
+        self.on_network_mode_change()
+
+    def on_network_mode_change(self):
+        mode = self.network_mode.get()
+        if mode in ['lan', 'online']:
+            self.room_name_container.pack(fill='x', pady=10, before=self.bottom_frame)
+            self.host_join_frame.pack(fill='x', pady=(0, 5))   # ✅ показать
+        else:
+            self.room_name_container.pack_forget()
+            self.host_join_frame.pack_forget()                  # ✅ скрыть
+        self.update_keybind_button()
 
     def on_game_mode_change(self):
         mode = self.game_mode.get()
@@ -448,8 +481,9 @@ class TetrisSetup:
         left.pack(side='left', fill='both', expand=True, padx=(0, 10))
 
         modes = [
-            ("VS", "vs"), ("CO-OP", "coop"), ("2 VS 2", "2vs2"),
-            ("Local LAN", "lan"), ("Global", "global"),
+            ("VS", "vs"),
+            ("CO-OP", "coop"),
+            ("2 VS 2", "2vs2"),
             ("🧬 Self-Learning", "self_learning"),
             ("🎓 Teacher-Student", "teacher_student")
         ]
@@ -458,6 +492,53 @@ class TetrisSetup:
                            bg=self.colors['frame_bg'], fg=self.colors['text'],
                            selectcolor=self.colors['frame_bg'], font=("Helvetica", 11)).pack(anchor='w', pady=5)
 
+        connection_frame = tk.LabelFrame(
+            top,
+            text="Connection",
+            bg=self.colors['frame_bg'],
+            fg=self.colors['text'],
+            font=("Helvetica", 12, "bold"),
+            padx=20,
+            pady=10
+        )
+
+        connection_frame.pack(side='left', fill='both', expand=True, padx=(10, 10))
+
+        connection_modes = [
+            ("Локальная игра", "local"),
+            ("LAN мультиплеер", "lan"),
+            ("Онлайн мультиплеер", "online")
+        ]
+
+        for text, value in connection_modes:
+            tk.Radiobutton(
+                connection_frame,
+                text=text,
+                variable=self.network_mode,
+                value=value,
+                bg=self.colors['frame_bg'],
+                fg=self.colors['text'],
+                selectcolor=self.colors['frame_bg'],
+                font=("Helvetica", 11)
+            ).pack(anchor='w', pady=5)
+
+        self.host_join_frame = tk.Frame(connection_frame, bg=self.colors['frame_bg'])
+        tk.Radiobutton(
+            self.host_join_frame, text="Создать комнату",
+            variable=self.is_host_var, value=True,
+            bg=self.colors['frame_bg'], fg=self.colors['text'],
+            selectcolor=self.colors['frame_bg'], font=("Helvetica", 10)
+        ).pack(anchor='w')
+        tk.Radiobutton(
+            self.host_join_frame, text="Присоединиться",
+            variable=self.is_host_var, value=False,
+            bg=self.colors['frame_bg'], fg=self.colors['text'],
+            selectcolor=self.colors['frame_bg'], font=("Helvetica", 10)
+        ).pack(anchor='w')
+
+        # ============================================================
+        # PLAYER SETUP
+        # ============================================================
         right = tk.LabelFrame(top, text="Players Configuration", bg=self.colors['frame_bg'], fg=self.colors['text'],
                               font=("Helvetica", 12, "bold"), padx=15, pady=10)
         right.pack(side='right', fill='both', expand=True, padx=(10, 0))
@@ -550,10 +631,14 @@ class TetrisSetup:
         tk.Button(btn_frame, text="Start Game", bg=self.colors['button'], fg='white', command=self.start_game, **style).pack(side='left', padx=5)
         tk.Button(btn_frame, text="Save Settings", bg='#2d6a4f', fg='white', command=self.save_settings, **style).pack(side='left', padx=5)
         tk.Button(btn_frame, text="Load Settings", bg='#2d6a4f', fg='white', command=self.load_settings, **style).pack(side='left', padx=5)
+        tk.Button(btn_frame, text="🏆 Таблица Лидеров", bg='#533483', fg='white', command=self.show_leaderboard, **style).pack(side='left', padx=5)
         tk.Button(btn_frame, text="🤖 Custom AI", bg='#533483', fg='white', command=self.open_custom_ai_settings, **style).pack(side='left', padx=5)
         tk.Button(btn_frame, text="Exit", bg='#dc3545', fg='white', command=self.exit_game, **style).pack(side='left', padx=5)
 
         self.on_game_mode_change()
+
+    def show_leaderboard(self):
+        LeaderboardWindow(self.root)
 
     def update_player_state(self, player):
         is_enabled = self.player_enabled[player].get()
@@ -570,6 +655,21 @@ class TetrisSetup:
             self.ai_menus[player].config(state='normal')
         else:
             self.ai_menus[player].config(state='disabled')
+        self.update_keybind_button()
+
+    def update_keybind_button(self):
+        enabled_players = sum(
+            1 for p in range(1, 5)
+            if self.player_enabled[p].get()
+        )
+
+        if self.network_mode.get() in ['lan', 'online'] and enabled_players > 1:
+            if hasattr(self, 'keybind_btn'):
+                self.keybind_btn.config(state='disabled')
+
+        else:
+            if hasattr(self, 'keybind_btn'):
+                self.keybind_btn.config(state='normal')
 
     def choose_color(self, player):
         color = colorchooser.askcolor(title=f"Player {player} color", color=self.player_colors[player])
@@ -606,12 +706,32 @@ class TetrisSetup:
             'teacher_student_delay': self.teacher_student_delay.get(),
         }
 
-        if self.game_mode.get() in ['lan', 'global']:
+        enabled_players = sum(
+            1 for p in range(1, 5)
+            if self.player_enabled[p].get()
+        )
+
+        if self.network_mode.get() in ['lan', 'online']:
+            settings['network_mode'] = self.network_mode.get()
             settings['room_name'] = self.room_name_var.get()
-            settings['dynamic_keymap'] = {1: self.dynamic_keybinds}
-            settings['server_host'] = '127.0.0.1'
             settings['server_port'] = 8888
-            settings['is_host'] = True
+            settings['is_host'] = self.is_host_var.get()   # ✅ БЫЛО: True
+
+            if self.network_mode.get() == 'lan':
+                settings['server_host'] = '127.0.0.1'
+
+            else:
+                settings['server_host'] = '127.0.0.1'
+
+            if enabled_players > 1:
+                settings['dynamic_keymap'] = {}
+
+            else:
+                settings['dynamic_keymap'] = {1: self.dynamic_keybinds}
+
+        else:
+            settings['network_mode'] = 'local'
+            #settings['dynamic_keymap'] = {1: self.dynamic_keybinds}
 
         return settings
 
@@ -628,16 +748,18 @@ class TetrisSetup:
         if not settings['players']:
             messagebox.showwarning("No players", "Enable at least one player!")
             return
-
-        # Скрываем окно настроек на время игры
         self.root.withdraw()
-        
-        game = Game(settings)
-        game.run()
-        
-        # Когда игра закончится, уничтожаем окно настроек, 
-        # чтобы App понял, что wait_window завершился, и вернул главное меню
-        self.root.destroy()
+        try:
+            game = Game(settings)
+            game.run()
+        except Exception as e:
+            Log.error(f"Критическая ошибка игры: {e}")
+        finally:
+            # ✅ Гарантированно уничтожаем окно настроек
+            try:
+                self.root.destroy()
+            except tk.TclError:
+                pass
 
     def save_settings(self):
         file = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON files", "*.json")])
@@ -695,11 +817,13 @@ class TetrisSetup:
             self.on_closing()
 
     def on_closing(self):
-        """Корректное завершение работы"""
         Log.info("Завершение работы...")
-        self.root.quit()
-        self.root.destroy()
-        os._exit(0)  # Жесткий выход, убивает все фоновые потоки и C-расширения
+        try:
+            self.root.quit()
+            self.root.destroy()
+        except Exception:
+            pass
+        os._exit(0)
 
     def run(self):
         self.root.mainloop()
