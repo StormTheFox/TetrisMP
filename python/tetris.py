@@ -5,76 +5,73 @@ import time
 import threading
 import asyncio
 import json
-import sqlite3
 import uuid
 from queue import Queue, Empty
-from datetime import datetime
 from typing import Dict, Any, Optional
-
 from rich.console import Console
 
 console = Console()
 
-
 # ================= CONFIG =================
+
 WIDTH = 15
 HEIGHT = 30
 CELL_SIZE = 10
 MINI_BOARD_WIDTH = 100
 
 PIECE_COLORS = {
-    'I': (0, 255, 255),
-    'O': (255, 255, 0),
-    'T': (128, 0, 128),
-    'S': (0, 255, 0),
-    'Z': (255, 0, 0),
-    'L': (255, 165, 0),
-    'J': (0, 0, 255)
+    "I": (0, 255, 255),
+    "O": (255, 255, 0),
+    "T": (128, 0, 128),
+    "S": (0, 255, 0),
+    "Z": (255, 0, 0),
+    "L": (255, 165, 0),
+    "J": (0, 0, 255),
 }
 
 SHAPES = {
-    'I': [[1, 1, 1, 1]],
-    'O': [[1, 1], [1, 1]],
-    'T': [[0, 1, 0], [1, 1, 1]],
-    'S': [[0, 1, 1], [1, 1, 0]],
-    'Z': [[1, 1, 0], [0, 1, 1]],
-    'L': [[1, 0, 0], [1, 1, 1]],
-    'J': [[0, 0, 1], [1, 1, 1]]
+    "I": [[1, 1, 1, 1]],
+    "O": [[1, 1], [1, 1]],
+    "T": [[0, 1, 0], [1, 1, 1]],
+    "S": [[0, 1, 1], [1, 1, 0]],
+    "Z": [[1, 1, 0], [0, 1, 1]],
+    "L": [[1, 0, 0], [1, 1, 1]],
+    "J": [[0, 0, 1], [1, 1, 1]],
 }
 
 KEYMAP = {
     1: {
-        'hard_drop': pygame.K_q,
-        'rotate': pygame.K_w,
-        'left': pygame.K_a,
-        'right': pygame.K_d,
-        'soft_drop': pygame.K_s,
-        'hold': pygame.K_e
+        "hard_drop": pygame.K_q,
+        "rotate": pygame.K_w,
+        "left": pygame.K_a,
+        "right": pygame.K_d,
+        "soft_drop": pygame.K_s,
+        "hold": pygame.K_e,
     },
     2: {
-        'hard_drop': pygame.K_r,
-        'rotate': pygame.K_t,
-        'left': pygame.K_f,
-        'right': pygame.K_h,
-        'soft_drop': pygame.K_g,
-        'hold': pygame.K_y
+        "hard_drop": pygame.K_r,
+        "rotate": pygame.K_t,
+        "left": pygame.K_f,
+        "right": pygame.K_h,
+        "soft_drop": pygame.K_g,
+        "hold": pygame.K_y,
     },
     3: {
-        'hard_drop': pygame.K_u,
-        'rotate': pygame.K_i,
-        'left': pygame.K_j,
-        'right': pygame.K_l,
-        'soft_drop': pygame.K_k,
-        'hold': pygame.K_o
+        "hard_drop": pygame.K_u,
+        "rotate": pygame.K_i,
+        "left": pygame.K_j,
+        "right": pygame.K_l,
+        "soft_drop": pygame.K_k,
+        "hold": pygame.K_o,
     },
     4: {
-        'hard_drop': pygame.K_RSHIFT,
-        'rotate': pygame.K_UP,
-        'left': pygame.K_LEFT,
-        'right': pygame.K_RIGHT,
-        'soft_drop': pygame.K_DOWN,
-        'hold': pygame.K_RCTRL
-    }
+        "hard_drop": pygame.K_RSHIFT,
+        "rotate": pygame.K_UP,
+        "left": pygame.K_LEFT,
+        "right": pygame.K_RIGHT,
+        "soft_drop": pygame.K_DOWN,
+        "hold": pygame.K_RCTRL,
+    },
 }
 
 DAS_DELAY = 200
@@ -82,7 +79,7 @@ DAS_REPEAT = 25
 
 LINE_SCORES = {1: 100, 2: 250, 3: 500, 4: 1000}
 
-GAME_MODES = ['vs', 'coop', '2vs2', 'lan', 'global', 'self_learning', 'teacher_student']
+GAME_MODES = ["vs", "coop", "2vs2", "lan", "global", "self_learning", "teacher_student"]
 
 SELF_LEARNING_DEFAULT_ITERATIONS = 20
 SELF_LEARNING_MUTATION_RATE = 0.05
@@ -126,10 +123,12 @@ class Piece:
 
     def get_cells(self):
         cells = []
+
         for r, row in enumerate(self.shape):
             for c, val in enumerate(row):
                 if val:
                     cells.append((self.x + c, self.y + r))
+
         return cells
 
 
@@ -146,8 +145,10 @@ class Board:
         for x, y in piece.get_cells():
             if x < 0 or x >= self.width or y >= self.height:
                 return False
+
             if y >= 0 and self.grid[y][x] is not None:
                 return False
+
         return True
 
     def place_piece(self, piece):
@@ -158,6 +159,7 @@ class Board:
         lines = self.clear_lines()
         self.lines_cleared_total += lines
         self.score += LINE_SCORES.get(lines, 0)
+
         return lines
 
     def clear_lines(self):
@@ -168,6 +170,7 @@ class Board:
             if all(self.grid[y][x] is not None for x in range(self.width)):
                 for yy in range(y, 0, -1):
                     self.grid[yy] = self.grid[yy - 1][:]
+
                 self.grid[0] = [None] * self.width
                 lines_cleared += 1
             else:
@@ -177,14 +180,18 @@ class Board:
 
     def drop_height(self, piece):
         y = piece.y
+
         while self.is_valid_position(piece):
             y += 1
             piece.y = y
+
         piece.y = y - 1
         return piece.y
 
 
 # ================= AI ARCHITECTURE =================
+
+
 class BaseAI:
     def __init__(self, player, config=None):
         self.player = player
@@ -193,55 +200,65 @@ class BaseAI:
         self._result_queue = Queue()
         self._compute_thread = None
         self._is_computing = False
+
         self._precompute_rotations()
 
         self.weights = {
-            'height': -0.510066,
-            'lines': 0.760666,
-            'holes': -0.356630,
-            'bumpiness': -0.184483,
-            'well_depth': -0.15,
-            'transitions': -0.03
+            "height": -0.510066,
+            "lines": 0.760666,
+            "holes": -0.356630,
+            "bumpiness": -0.184483,
+            "well_depth": -0.15,
+            "transitions": -0.03,
         }
 
     def _precompute_rotations(self):
         self.rotations = {}
+
         for name, shape in SHAPES.items():
             rots = [shape]
             s = [row[:] for row in shape]
+
             for _ in range(3):
                 s = [list(row) for row in zip(*s[::-1])]
                 rots.append(s)
+
             self.rotations[name] = rots
 
     def _capture_state(self):
         return {
-            'grid': [row[:] for row in self.player.board.grid],
-            'width': self.player.board.width,
-            'height': self.player.board.height,
-            'curr_shape': self.player.current_piece.shape_name,
-            'hold_shape': self.player.hold_piece.shape_name if self.player.hold_piece else None,
-            'hold_used': self.player.hold_used,
-            'next_shapes': [p.shape_name for p in self.player.next_pieces]
+            "grid": [row[:] for row in self.player.board.grid],
+            "width": self.player.board.width,
+            "height": self.player.board.height,
+            "curr_shape": self.player.current_piece.shape_name,
+            "hold_shape": self.player.hold_piece.shape_name if self.player.hold_piece else None,
+            "hold_used": self.player.hold_used,
+            "next_shapes": [p.shape_name for p in self.player.next_pieces],
         }
 
     def _fast_drop(self, shape, grid, width, height, offset_x):
-        sh, sw = len(shape), len(shape[0])
+        sh = len(shape)
         y = 0
 
         while y + sh <= height:
             collides = False
+
             for r, row in enumerate(shape):
                 for c, val in enumerate(row):
                     if val:
-                        nx, ny = offset_x + c, y + r
+                        nx = offset_x + c
+                        ny = y + r
+
                         if nx < 0 or nx >= width or grid[ny][nx] is not None:
                             collides = True
                             break
+
                 if collides:
                     break
+
             if collides:
                 break
+
             y += 1
 
         return y - 1
@@ -258,21 +275,33 @@ class BaseAI:
         holes = 0
         lines = 0
         bumpiness = 0
+        transitions = 0
+        well_depth = 0
 
         for col in range(width):
-            h = 0
-            for row in range(height):
-                if sim_grid[row][col] is not None:
-                    h = height - row
-                    break
-            heights[col] = h
+            top_row = None
 
-            found = False
             for row in range(height):
                 if sim_grid[row][col] is not None:
-                    found = True
-                elif found:
-                    holes += 1
+                    top_row = row
+                    break
+
+            if top_row is not None:
+                heights[col] = height - top_row
+
+                for row in range(top_row + 1, height):
+                    if sim_grid[row][col] is None:
+                        holes += 1
+
+            prev_filled = False
+
+            for row in range(height):
+                filled = sim_grid[row][col] is not None
+
+                if filled != prev_filled:
+                    transitions += 1
+
+                prev_filled = filled
 
         for row in range(height):
             if all(sim_grid[row][col] is not None for col in range(width)):
@@ -281,47 +310,65 @@ class BaseAI:
         for col in range(width - 1):
             bumpiness += abs(heights[col] - heights[col + 1])
 
+        for col in range(1, width - 1):
+            cur = heights[col]
+            lft = heights[col - 1]
+            rgt = heights[col + 1]
+
+            if cur < lft and cur < rgt:
+                well_depth += min(lft, rgt) - cur
+
+        max_h = max(heights) if heights else 0
+        avg_h = (sum(heights) / width) if width else 0
+
         return (
-            self.weights['height'] * (sum(heights) / width) +
-            self.weights['lines'] * lines +
-            self.weights['holes'] * holes +
-            self.weights['bumpiness'] * bumpiness
+            self.weights.get("height", -0.51) * avg_h
+            + self.weights.get("lines", 0.76) * lines
+            + self.weights.get("holes", -0.36) * holes
+            + self.weights.get("bumpiness", -0.18) * bumpiness
+            + self.weights.get("well_depth", -0.15) * well_depth
+            + self.weights.get("max_height", 0.0) * max_h
+            + self.weights.get("transitions", -0.03) * transitions
         )
 
     def _compute_in_background(self, state):
         t0 = time.time()
 
         try:
-            candidates = [('current', state['curr_shape'], False)]
+            candidates = [("current", state["curr_shape"], False)]
 
-            if not state['hold_used']:
-                if state['hold_shape']:
-                    candidates.append(('hold', state['hold_shape'], True))
-                elif len(state['next_shapes']) > 0:
-                    candidates.append(('next', state['next_shapes'][0], True))
+            if not state["hold_used"]:
+                if state["hold_shape"]:
+                    candidates.append(("hold", state["hold_shape"], True))
+                elif state["next_shapes"]:
+                    candidates.append(("next", state["next_shapes"][0], True))
 
-            best_score = float('-inf')
+            best_score = float("-inf")
             best_plan = None
-            w, h, grid = state['width'], state['height'], state['grid']
+
+            w, h, grid = state["width"], state["height"], state["grid"]
 
             for src, shape_name, use_hold in candidates:
                 for rot_idx, shape in enumerate(self.rotations[shape_name]):
                     sw = len(shape[0])
+
                     if sw > w:
                         continue
 
-                    min_x, max_x = max(0, -(sw - 1)), min(w - 1, w - sw)
-
-                    for x in range(min_x, max_x + 1):
+                    for x in range(0, w - sw + 1):
                         y = self._fast_drop(shape, grid, w, h, x)
+
                         if y < 0:
                             continue
 
                         score = self.evaluate(shape, x, y, grid, w, h)
+
                         if score > best_score:
-                            best_score, best_plan = score, (use_hold, x, rot_idx)
+                            best_score = score
+                            best_plan = (use_hold, x, rot_idx)
 
             elapsed = (time.time() - t0) * 1000
+
             Log.debug(
                 f"🧠 ИИ (Игрок {self.player.id}): просчёт за {elapsed:.1f}мс | "
                 f"Score: {best_score:.2f} | План: {best_plan}"
@@ -336,20 +383,23 @@ class BaseAI:
 
     def _generate_actions(self, plan):
         if plan is None:
-            if not hasattr(self, '_warned_none'):
+            if not hasattr(self, "_warned_none"):
                 Log.warning(f"⚠️ ИИ (Игрок {self.player.id}): план не найден, экстренный hard_drop")
                 self._warned_none = True
-            self.action_queue.append('hard_drop')
+
+            self.action_queue.append("hard_drop")
             return
 
         self._warned_none = False
+
         use_hold, target_x, target_rot = plan
         queue = []
 
         if use_hold:
-            queue.append('hold')
+            queue.append("hold")
 
         curr = self.player.current_piece
+
         dr = (target_rot - curr.rotation) % 4
 
         sim = copy.deepcopy(curr)
@@ -360,15 +410,22 @@ class BaseAI:
         if not self.player.board.is_valid_position(sim):
             for kdx in [-1, 1, -2, 2]:
                 sim.move(kdx, 0)
+
                 if self.player.board.is_valid_position(sim):
                     break
+
                 sim.move(-kdx, 0)
 
         dx = target_x - sim.x
 
-        queue.extend(['rotate'] * dr)
-        queue.extend(['right'] * dx if dx > 0 else ['left'] * abs(dx))
-        queue.append('hard_drop')
+        queue.extend(["rotate"] * dr)
+
+        if dx > 0:
+            queue.extend(["right"] * dx)
+        else:
+            queue.extend(["left"] * abs(dx))
+
+        queue.append("hard_drop")
 
         Log.debug(f"📝 ИИ (Игрок {self.player.id}): сгенерирована очередь -> {queue}")
         self.action_queue = queue
@@ -389,47 +446,155 @@ class BaseAI:
 
         if not self._is_computing:
             Log.debug(f"🚀 ИИ (Игрок {self.player.id}): запуск фоновой задачи")
+
             self._is_computing = True
             self._compute_thread = threading.Thread(
                 target=self._compute_in_background,
                 args=(self._capture_state(),),
-                daemon=True
+                daemon=True,
             )
             self._compute_thread.start()
 
         return None
 
 
+# ================= DEEPSEEK AI =================
+
+
+class DeepSeekAI(BaseAI):
+    def __init__(self, player, config=None):
+        super().__init__(player, config)
+
+        self.weights = {
+            "height": -0.55,
+            "lines": 1.10,
+            "holes": -0.95,
+            "bumpiness": -0.22,
+            "well_depth": -0.12,
+            "max_height": -0.65,
+            "transitions": -0.018,
+        }
+
+        self.critical_weights = {
+            "height": -0.90,
+            "lines": 1.55,
+            "holes": -1.45,
+            "bumpiness": -0.35,
+            "well_depth": -0.05,
+            "max_height": -1.60,
+            "transitions": -0.030,
+        }
+
+    def evaluate(self, shape, x, drop_y, grid, width, height):
+        sim_grid = [row[:] for row in grid]
+
+        for r, row in enumerate(shape):
+            for c, val in enumerate(row):
+                if val:
+                    sim_grid[drop_y + r][x + c] = 1
+
+        heights = [0] * width
+        holes = 0
+        bumpiness = 0
+        transitions = 0
+        well_depth = 0
+
+        for col in range(width):
+            top_row = None
+
+            for row in range(height):
+                if sim_grid[row][col] is not None:
+                    top_row = row
+                    break
+
+            if top_row is not None:
+                heights[col] = height - top_row
+
+                for row in range(top_row + 1, height):
+                    if sim_grid[row][col] is None:
+                        holes += 1
+
+            prev_filled = False
+
+            for row in range(height):
+                filled = sim_grid[row][col] is not None
+
+                if filled != prev_filled:
+                    transitions += 1
+
+                prev_filled = filled
+
+        lines = 0
+
+        for row in range(height):
+            if all(sim_grid[row][col] is not None for col in range(width)):
+                lines += 1
+
+        for col in range(width - 1):
+            bumpiness += abs(heights[col] - heights[col + 1])
+
+        for col in range(1, width - 1):
+            cur = heights[col]
+            lft = heights[col - 1]
+            rgt = heights[col + 1]
+
+            if cur < lft and cur < rgt:
+                well_depth += min(lft, rgt) - cur
+
+        max_h = max(heights) if heights else 0
+        avg_h = (sum(heights) / width) if width else 0
+
+        if height and max_h / height > 0.7:
+            w = self.critical_weights
+        else:
+            w = self.weights
+
+        return (
+            w["height"] * avg_h
+            + w["lines"] * lines
+            + w["holes"] * holes
+            + w["bumpiness"] * bumpiness
+            + w["well_depth"] * well_depth
+            + w["max_height"] * max_h
+            + w["transitions"] * transitions
+        )
+
+
 class QwenAI(BaseAI):
     def __init__(self, player, config=None):
         super().__init__(player, config)
+
         self.weights = {
-            'height': -0.62,
-            'lines': 0.95,
-            'holes': -0.85,
-            'bumpiness': -0.24,
-            'well_depth': -0.18,
-            'max_height': -0.55,
-            'transitions': -0.006
+            "height": -0.62,
+            "lines": 0.95,
+            "holes": -0.85,
+            "bumpiness": -0.24,
+            "well_depth": -0.18,
+            "max_height": -0.55,
+            "transitions": -0.006,
         }
 
 
 class CustomAI(BaseAI):
     def __init__(self, player, config=None):
         super().__init__(player, config)
+
+        config = config or {}
+
         self.weights = {
-            'height': config.get('height', -0.51),
-            'lines': config.get('lines', 0.76),
-            'holes': config.get('holes', -0.36),
-            'bumpiness': config.get('bumpiness', -0.18),
-            'well_depth': config.get('well_depth', -0.15),
-            'transitions': config.get('transitions', -0.03)
+            "height": config.get("height", -0.51),
+            "lines": config.get("lines", 0.76),
+            "holes": config.get("holes", -0.36),
+            "bumpiness": config.get("bumpiness", -0.18),
+            "well_depth": config.get("well_depth", -0.15),
+            "transitions": config.get("transitions", -0.03),
         }
 
 
 class StudentAI(BaseAI):
     def __init__(self, player, teacher_player, delay=5, config=None):
         super().__init__(player, config)
+
         self.teacher = teacher_player
         self.delay = max(0, int(delay))
         self.action_log = []
@@ -446,51 +611,323 @@ class StudentAI(BaseAI):
 
         return None
 
+    def export_learned_weights(self):
+        counts = {
+            "left": 0,
+            "right": 0,
+            "rotate": 0,
+            "soft_drop": 0,
+            "hard_drop": 0,
+            "hold": 0,
+        }
+
+        for _, action in getattr(self, "action_log", []):
+            if action in counts:
+                counts[action] += 1
+
+        total = max(1, sum(counts.values()))
+
+        rotate_ratio = counts["rotate"] / total
+        move_ratio = (counts["left"] + counts["right"]) / total
+        soft_ratio = counts["soft_drop"] / total
+        hold_ratio = counts["hold"] / total
+
+        weights = dict(self.weights)
+
+        base_height = float(weights.get("height", -0.51))
+        base_lines = float(weights.get("lines", 0.76))
+        base_holes = float(weights.get("holes", -0.36))
+        base_bumpiness = float(weights.get("bumpiness", -0.18))
+        base_well_depth = float(weights.get("well_depth", -0.15))
+
+        weights["height"] = base_height - (soft_ratio * 0.20)
+        weights["lines"] = base_lines + (rotate_ratio * 0.30)
+        weights["holes"] = base_holes - (move_ratio * 0.25)
+        weights["bumpiness"] = base_bumpiness - (move_ratio * 0.12)
+        weights["well_depth"] = base_well_depth - (hold_ratio * 0.08)
+
+        result = {}
+
+        for key, value in weights.items():
+            try:
+                result[key] = max(-2.0, min(2.0, float(value)))
+            except Exception:
+                continue
+
+        return result
 
 class SelfLearningEngine:
-    def __init__(self, iterations: int, ai_type: str, base_config: dict):
-        self.iterations = max(1, int(iterations))
+    def __init__(self, iterations: int, ai_type: str, base_config: dict,
+                 start_from_zero: bool = False,
+                 show_gameplay_callback=None):
+        try:
+            iterations = int(iterations)
+        except Exception:
+            iterations = SELF_LEARNING_DEFAULT_ITERATIONS
+        if iterations == 0:
+            iterations = 1
+        self.iterations = iterations
         self.ai_type = ai_type
+        self.start_from_zero = start_from_zero
+        self.show_gameplay_callback = show_gameplay_callback
 
-        self.weights = dict(base_config) if base_config else {
-            'height': -0.51,
-            'lines': 0.76,
-            'holes': -0.36,
-            'bumpiness': -0.18,
-            'well_depth': -0.15
+        default_weights = {
+            "height": -0.51,
+            "lines": 0.76,
+            "holes": -0.36,
+            "bumpiness": -0.18,
+            "well_depth": -0.15,
         }
+
+        if self.start_from_zero:
+            self.weights = {k: 0.0 for k in default_weights}
+        else:
+            self.weights = dict(base_config) if base_config else {}
+            for key, value in default_weights.items():
+                self.weights.setdefault(key, value)
 
         self.best_weights = dict(self.weights)
         self.best_score = -1
         self.stats = []
+        self.stats_limit = 1000
+        self.iterations_done = 0
+        self.rotations = self._precompute_rotations()
 
-    def run(self, on_iter_callback=None):
-        for i in range(1, self.iterations + 1):
-            score, lines, t = self._run_one()
-            entry = {'iter': i, 'score': score, 'lines': lines, 'time': round(t, 2)}
+    def _precompute_rotations(self):
+        rotations = {}
+        for name, shape in SHAPES.items():
+            rots = [shape]
+            current = [row[:] for row in shape]
+            for _ in range(3):
+                current = [list(row) for row in zip(*current[::-1])]
+                rots.append(current)
+            rotations[name] = rots
+        return rotations
+
+    def run(self, on_iter_callback=None, stop_event=None):
+        infinite = self.iterations < 0
+        i = 0
+        while True:
+            if stop_event is not None and stop_event.is_set():
+                break
+            i += 1
+            if not infinite and i > self.iterations:
+                break
+            if i > 1:
+                self._mutate()
+            score, lines, elapsed = self._run_one(stop_event=stop_event)
+            entry = {
+                "iter": i,
+                "score": score,
+                "lines": lines,
+                "time": round(elapsed, 2),
+            }
             self.stats.append(entry)
-
+            if len(self.stats) > self.stats_limit * 2:
+                self.stats = self.stats[-self.stats_limit:]
+            self.iterations_done += 1
+            if on_iter_callback:
+                try:
+                    if on_iter_callback(entry) is False:
+                        break
+                except Exception:
+                    pass
             if score > self.best_score:
                 self.best_score = score
                 self.best_weights = dict(self.weights)
-
+            if (not infinite) or (i % 25 == 0):
+                Log.info(
+                    f"🧬 Self-learning итерация {i}"
+                    f"{'/∞' if infinite else f'/{self.iterations}'}: "
+                    f"score={score}, lines={lines}, time={elapsed:.2f}s"
+                )
         return {
-            'best_score': self.best_score,
-            'best_weights': self.best_weights,
-            'stats': self.stats
+            "best_score": self.best_score,
+            "best_weights": self.best_weights,
+            "stats": self.stats,
+            "iterations_done": self.iterations_done,
+            "stopped": bool(stop_event is not None and stop_event.is_set()),
         }
 
-    def _run_one(self):
-        return 1000, 10, 1.0
+    def _mutate(self):
+        for key in list(self.weights.keys()):
+            if random.random() < SELF_LEARNING_MUTATION_RATE:
+                try:
+                    self.weights[key] = float(self.weights[key]) + random.uniform(-0.08, 0.08)
+                    self.weights[key] = max(-2.0, min(2.0, self.weights[key]))
+                except Exception:
+                    continue
 
+    def _mutate_on_step(self, lines_cleared, holes_delta):
+        rate = 0.002
+        if lines_cleared > 0:
+            self.weights["lines"] = min(2.0, self.weights.get("lines", 0.0) + rate * lines_cleared)
+            self.weights["height"] = max(-2.0, self.weights.get("height", 0.0) - rate * 0.5)
+        if holes_delta > 0:
+            self.weights["holes"] = max(-2.0, self.weights.get("holes", 0.0) - rate * holes_delta)
+        elif holes_delta < 0:
+            self.weights["holes"] = min(2.0, self.weights.get("holes", 0.0) + rate * abs(holes_delta))
+        for key in self.weights:
+            if random.random() < 0.05:
+                self.weights[key] = max(-2.0, min(2.0,
+                    self.weights[key] + random.uniform(-rate, rate)))
+
+    def _count_holes(self, grid, width, height):
+        holes = 0
+        for col in range(width):
+            top_row = None
+            for row in range(height):
+                if grid[row][col] is not None:
+                    top_row = row
+                    break
+            if top_row is not None:
+                for row in range(top_row + 1, height):
+                    if grid[row][col] is None:
+                        holes += 1
+        return holes
+
+    def _fast_drop(self, shape, grid, width, height, offset_x):
+        shape_height = len(shape)
+        y = 0
+        while y + shape_height <= height:
+            collides = False
+            for r, row in enumerate(shape):
+                for c, val in enumerate(row):
+                    if val:
+                        nx = offset_x + c
+                        ny = y + r
+                        if nx < 0 or nx >= width or grid[ny][nx] is not None:
+                            collides = True
+                            break
+                if collides:
+                    break
+            if collides:
+                break
+            y += 1
+        return y - 1
+
+    def _evaluate(self, shape, x, drop_y, grid, width, height):
+        sim_grid = [row[:] for row in grid]
+        for r, row in enumerate(shape):
+            for c, val in enumerate(row):
+                if val:
+                    yy = drop_y + r
+                    xx = x + c
+                    if yy < 0 or yy >= height or xx < 0 or xx >= width:
+                        return float("-inf")
+                    sim_grid[yy][xx] = 1
+        heights = [0] * width
+        holes = 0
+        lines = 0
+        bumpiness = 0
+        for col in range(width):
+            top_row = None
+            for row in range(height):
+                if sim_grid[row][col] is not None:
+                    top_row = row
+                    break
+            if top_row is not None:
+                heights[col] = height - top_row
+                for row in range(top_row + 1, height):
+                    if sim_grid[row][col] is None:
+                        holes += 1
+        for row in range(height):
+            if all(sim_grid[row][col] is not None for col in range(width)):
+                lines += 1
+        for col in range(width - 1):
+            bumpiness += abs(heights[col] - heights[col + 1])
+        well_depth = 0
+        for col in range(1, width - 1):
+            current = heights[col]
+            left = heights[col - 1]
+            right = heights[col + 1]
+            if current < left and current < right:
+                well_depth += min(left, right) - current
+        avg_height = sum(heights) / width if width else 0
+        max_height = max(heights) if heights else 0
+        return (
+            self.weights.get("height", -0.51) * avg_height
+            + self.weights.get("lines", 0.76) * lines
+            + self.weights.get("holes", -0.36) * holes
+            + self.weights.get("bumpiness", -0.18) * bumpiness
+            + self.weights.get("well_depth", -0.15) * well_depth
+            + self.weights.get("max_height", 0.0) * max_height
+        )
+
+    def _run_one(self, stop_event=None):
+        start_time = time.time()
+        board = Board(WIDTH, HEIGHT)
+        shape_names = list(SHAPES.keys())
+        piece = Piece(random.choice(shape_names), (255, 255, 255))
+        max_pieces = 350
+        placed_pieces = 0
+
+        while placed_pieces < max_pieces:
+            if stop_event is not None and stop_event.is_set():
+                break
+            if not board.is_valid_position(piece):
+                break
+
+            holes_before = self._count_holes(board.grid, board.width, board.height)
+
+            best_score = float("-inf")
+            best_placement = None
+            for shape in self.rotations[piece.shape_name]:
+                shape_width = len(shape[0])
+                if shape_width > board.width:
+                    continue
+                for x in range(0, board.width - shape_width + 1):
+                    y = self._fast_drop(shape, board.grid, board.width, board.height, x)
+                    if y < 0:
+                        continue
+                    score = self._evaluate(shape, x, y, board.grid, board.width, board.height)
+                    if score > best_score or (score == best_score and random.random() < 0.3):
+                        best_score = score
+                        best_placement = (shape, x, y)
+
+            if best_placement is None:
+                break
+
+            shape, x, y = best_placement
+            for r, row in enumerate(shape):
+                for c, val in enumerate(row):
+                    if val and y + r >= 0:
+                        board.grid[y + r][x + c] = piece.color
+
+            lines = board.clear_lines()
+            board.lines_cleared_total += lines
+            board.score += LINE_SCORES.get(lines, 0)
+
+            holes_after = self._count_holes(board.grid, board.width, board.height)
+            holes_delta = holes_after - holes_before
+            self._mutate_on_step(lines, holes_delta)
+
+            if self.show_gameplay_callback:
+                self.show_gameplay_callback(
+                    grid=[row[:] for row in board.grid],
+                    width=board.width,
+                    height=board.height,
+                    score=board.score,
+                    lines=board.lines_cleared_total,
+                    piece_name=piece.shape_name,
+                    placed_pieces=placed_pieces + 1,
+                )
+                time.sleep(0.01)
+
+            placed_pieces += 1
+            piece = Piece(random.choice(shape_names), piece.color)
+
+        elapsed = time.time() - start_time
+        return board.score, board.lines_cleared_total, elapsed
 
 class Player:
     def __init__(self, player_id, settings, board):
         self.id = player_id
-        self.nickname = settings.get('nickname', f'Player {player_id}')
-        self.color = pygame.Color(settings['color'])
-        self.speed = settings['speed']
-        self.is_bot = settings.get('is_bot', False)
+        self.nickname = settings.get("nickname", f"Player {player_id}")
+        self.color = pygame.Color(settings["color"])
+        self.speed = settings["speed"]
+        self.is_bot = settings.get("is_bot", False)
+
         self.board = board
         self.hold_piece = None
         self.hold_used = False
@@ -502,22 +939,25 @@ class Player:
         self.game_over_time = None
 
         self.key_state = {
-            action: False for action in
-            ['left', 'right', 'soft_drop', 'hard_drop', 'rotate', 'hold']
+            action: False
+            for action in ["left", "right", "soft_drop", "hard_drop", "rotate", "hold"]
         }
-        self.key_timers = {action: 0 for action in ['left', 'right', 'soft_drop']}
-        self.das_triggered = {action: False for action in ['left', 'right', 'soft_drop']}
+
+        self.key_timers = {action: 0 for action in ["left", "right", "soft_drop"]}
+        self.das_triggered = {action: False for action in ["left", "right", "soft_drop"]}
 
         self.bot = None
 
         if self.is_bot:
-            ai_type = settings.get('ai_type', 'qwen')
-            ai_config = settings.get('ai_config', {})
+            ai_type = settings.get("ai_type", "qwen")
+            ai_config = settings.get("ai_config", {})
 
-            if ai_type == 'custom':
+            if ai_type == "custom":
                 self.bot = CustomAI(self, ai_config)
-            elif ai_type == 'student':
+            elif ai_type == "student":
                 self.bot = None
+            elif ai_type == "deepseek":
+                self.bot = DeepSeekAI(self, ai_config)
             else:
                 self.bot = QwenAI(self, ai_config)
 
@@ -526,6 +966,7 @@ class Player:
 
     def generate_next_pieces(self, count=3):
         shapes = list(SHAPES.keys())
+
         for _ in range(count):
             self.next_pieces.append(Piece(random.choice(shapes), self.color))
 
@@ -566,11 +1007,13 @@ class Player:
         if self.is_bot:
             if self.bot:
                 action = self.bot.get_action()
+
                 if action:
                     self.handle_action(action)
+
             return
 
-        for action in ['left', 'right', 'soft_drop']:
+        for action in ["left", "right", "soft_drop"]:
             if self.key_state[action]:
                 if not self.das_triggered[action]:
                     self.handle_action(action)
@@ -578,6 +1021,7 @@ class Player:
                     self.key_timers[action] = 0
                 else:
                     self.key_timers[action] += dt
+
                     if self.key_timers[action] >= DAS_DELAY:
                         while self.key_timers[action] >= DAS_DELAY + DAS_REPEAT:
                             self.handle_action(action)
@@ -587,6 +1031,7 @@ class Player:
                 self.key_timers[action] = 0
 
         self.fall_timer += dt
+
         effective_speed = min(10.0, self.speed + (self.level - 1) * 0.15)
         fall_interval = max(10, 1000 / (effective_speed * 10))
 
@@ -598,17 +1043,17 @@ class Player:
         if not self.alive or self.current_piece is None:
             return
 
-        if action == 'left':
+        if action == "left":
             self.move_piece(-1, 0)
-        elif action == 'right':
+        elif action == "right":
             self.move_piece(1, 0)
-        elif action == 'soft_drop':
+        elif action == "soft_drop":
             self.move_piece(0, 1)
-        elif action == 'hard_drop':
+        elif action == "hard_drop":
             self.hard_drop()
-        elif action == 'rotate':
+        elif action == "rotate":
             self.rotate_piece()
-        elif action == 'hold':
+        elif action == "hold":
             self.hold_current()
 
     def move_piece(self, dx, dy):
@@ -616,6 +1061,7 @@ class Player:
 
         if not self.board.is_valid_position(self.current_piece):
             self.current_piece.move(-dx, -dy)
+
             if dy == 1:
                 self.lock_piece()
 
@@ -625,8 +1071,10 @@ class Player:
         if not self.board.is_valid_position(self.current_piece):
             for dx in [-1, 1, -2, 2]:
                 self.current_piece.move(dx, 0)
+
                 if self.board.is_valid_position(self.current_piece):
                     return
+
                 self.current_piece.move(-dx, 0)
 
             for _ in range(3):
@@ -640,7 +1088,8 @@ class Player:
         self.lock_piece()
 
     def lock_piece(self):
-        lines_cleared = self.board.place_piece(self.current_piece)
+        self.board.place_piece(self.current_piece)
+
         new_level = 1 + self.board.lines_cleared_total // 10
 
         if new_level > self.level:
@@ -650,21 +1099,25 @@ class Player:
 
 
 # ================= GAME CLASS =================
+
+
 class Game:
     def __init__(self, settings):
         pygame.init()
 
         self.settings = settings
-        self.current_user = settings.get('current_user', 'Guest')
-        self.game_mode = settings['game_mode']
-        self.players_data = settings['players']
-        self.dynamic_keymap = settings.get('dynamic_keymap', {})
-        self.is_spectator = settings.get('is_spectator', False)
-        self.num_players = len([p for p in self.players_data.values() if p.get('enabled', False)])
+        self.current_user = settings.get("current_user", "Guest")
+        self.game_mode = settings["game_mode"]
+        self.players_data = settings["players"]
+        self.dynamic_keymap = settings.get("dynamic_keymap", {})
+        self.is_spectator = settings.get("is_spectator", False)
+
+        self.num_players = len([p for p in self.players_data.values() if p.get("enabled", False)])
+
         self.players = []
         self.client_id = None
 
-        if self.game_mode == 'self_learning':
+        if self.game_mode == "self_learning":
             self.running = False
             return
 
@@ -677,19 +1130,19 @@ class Game:
         self.small_font = pygame.font.Font(None, 18)
         self.big_font = pygame.font.Font(None, 48)
 
-        if self.game_mode == 'coop':
+        if self.game_mode == "coop":
             total_width = WIDTH * self.num_players
             self.shared_board = Board(total_width, HEIGHT)
 
             for pid, pdata in self.players_data.items():
-                if pdata.get('enabled'):
+                if pdata.get("enabled"):
                     self.players.append(Player(pid, pdata, self.shared_board))
 
-        elif self.game_mode == '2vs2':
+        elif self.game_mode == "2vs2":
             t1, t2 = [], []
 
             for pid, pdata in self.players_data.items():
-                if pdata.get('enabled'):
+                if pdata.get("enabled"):
                     if len(t1) < 2:
                         t1.append((pid, pdata))
                     else:
@@ -700,47 +1153,67 @@ class Game:
             self.team2_board = Board(self.team_board_w * 2, HEIGHT)
 
             self.teams = [
-                {'board': self.team1_board, 'players': []},
-                {'board': self.team2_board, 'players': []}
+                {"board": self.team1_board, "players": []},
+                {"board": self.team2_board, "players": []},
             ]
 
             for pid, pdata in t1:
                 p = Player(pid, pdata, self.team1_board)
                 self.players.append(p)
-                self.teams[0]['players'].append(p)
+                self.teams[0]["players"].append(p)
 
             for pid, pdata in t2:
                 p = Player(pid, pdata, self.team2_board)
                 self.players.append(p)
-                self.teams[1]['players'].append(p)
+                self.teams[1]["players"].append(p)
 
         else:
             for pid, pdata in self.players_data.items():
-                if pdata.get('enabled'):
-                    self.players.append(Player(pid, pdata, Board(WIDTH, HEIGHT, pdata['color'])))
+                if pdata.get("enabled"):
+                    self.players.append(
+                        Player(
+                            pid,
+                            pdata,
+                            Board(WIDTH, HEIGHT, pdata["color"]),
+                        )
+                    )
+
+        if self.game_mode == "teacher_student":
+            teacher = next((p for p in self.players if p.id == 1), None)
+            student = next((p for p in self.players if p.id == 2), None)
+
+            if student is not None:
+                delay = int(settings.get("teacher_student_delay", TEACHER_STUDENT_DELAY))
+                student_config = settings.get("players", {}).get(2, {}).get("ai_config", {})
+
+                student.bot = StudentAI(
+                    student,
+                    teacher,
+                    delay=delay,
+                    config=student_config,
+                )
+
+                student.is_bot = True
 
         self.layout_positions = self.calculate_layout()
-
         self.remote_player_boards = {}
         self.network_client = None
 
-        if self.game_mode in ['lan', 'global'] or self.settings.get('network_mode') in ['lan', 'online']:
-            host = settings.get('server_host', '127.0.0.1')
-            port = settings.get('server_port', 8888)
-            room_name = settings.get('room_name', 'default_room')
-            is_host = settings.get('is_host', True)
+        if self.game_mode in ["lan", "global"] or self.settings.get("network_mode") in ["lan", "online"]:
+            host = settings.get("server_host", "127.0.0.1")
+            port = settings.get("server_port", 8888)
+            room_name = settings.get("room_name", "default_room")
+            is_host = settings.get("is_host", True)
 
-            # Уникальный идентификатор клиента нужен, чтобы состояния разных клиентов
-            # не конфликтовали по одинаковым локальным player.id.
             self.client_id = uuid.uuid4().hex[:8]
             self._own_state_keys = set()
 
             player_info = {
                 f"{self.client_id}:{p.id}": {
-                    'client_id': self.client_id,
-                    'nickname': p.nickname,
-                    'color': f"#{p.color.r:02x}{p.color.g:02x}{p.color.b:02x}",
-                    'is_spectator': False
+                    "client_id": self.client_id,
+                    "nickname": p.nickname,
+                    "color": f"#{p.color.r:02x}{p.color.g:02x}{p.color.b:02x}",
+                    "is_spectator": False,
                 }
                 for p in self.players
             }
@@ -751,8 +1224,9 @@ class Game:
                 room_name,
                 is_host,
                 player_info,
-                client_id=self.client_id
+                client_id=self.client_id,
             )
+
             self.network_client.start()
             self.remote_player_boards = {}
 
@@ -762,30 +1236,36 @@ class Game:
     def calculate_layout(self):
         board_px_w, board_px_h = WIDTH * CELL_SIZE, HEIGHT * CELL_SIZE
         spacing, info_top = 20, 30
-        info_bottom = 100 if self.game_mode != 'coop' else 140
+        info_bottom = 100 if self.game_mode != "coop" else 140
 
-        if self.game_mode == 'coop':
+        if self.game_mode == "coop":
             total_w = (WIDTH * self.num_players * CELL_SIZE) + 40
             total_h = info_top + board_px_h + info_bottom + 40
+
             self.layout_width, self.layout_height = total_w, total_h
             self.board_position = (20, info_top + 20)
             self.board_width_px = WIDTH * self.num_players * CELL_SIZE
             self.board_height_px = board_px_h
+
             return []
 
-        elif self.game_mode == '2vs2':
+        elif self.game_mode == "2vs2":
             board_px_w = self.team_board_w * CELL_SIZE
+
             total_w = (board_px_w * 2) + (spacing * 3)
             total_h = info_top + board_px_h + info_bottom + spacing * 2
+
             self.layout_width, self.layout_height = total_w, total_h
             self.board_width_px, self.board_height_px = board_px_w, board_px_h
+
             self.team_positions = [
                 (spacing, info_top + spacing),
-                (spacing + board_px_w + spacing, info_top + spacing)
+                (spacing + board_px_w + spacing, info_top + spacing),
             ]
+
             return self.team_positions
 
-        elif self.game_mode in ['lan', 'global', 'multiplayer'] or self.settings.get('network_mode') in ['lan', 'online']:
+        elif self.game_mode in ["lan", "global", "multiplayer"] or self.settings.get("network_mode") in ["lan", "online"]:
             board_px_w = WIDTH * CELL_SIZE
             board_px_h = HEIGHT * CELL_SIZE
 
@@ -799,6 +1279,7 @@ class Game:
 
             self.layout_width, self.layout_height = total_w, total_h
             self.board_width_px, self.board_height_px = board_px_w, board_px_h
+
             return []
 
         else:
@@ -812,21 +1293,23 @@ class Game:
             self.board_width_px, self.board_height_px = board_px_w, board_px_h
 
             positions = []
+
             for idx in range(self.num_players):
                 col, row = idx % cols, idx // cols
-                positions.append((
-                    spacing + col * (board_px_w + spacing),
-                    info_top + spacing + row * (board_px_h + info_bottom + spacing)
-                ))
+
+                positions.append(
+                    (
+                        spacing + col * (board_px_w + spacing),
+                        info_top + spacing + row * (board_px_h + info_bottom + spacing),
+                    )
+                )
 
             return positions
 
     def run(self):
         Log.info(f"🎮 Игра запущена. Режим: {self.game_mode}, Игроков: {self.num_players}")
 
-        if self.game_mode == 'self_learning':
-            #pygame.quit()
-            # Commented for debug and pure curiosity
+        if self.game_mode == "self_learning":
             return
 
         try:
@@ -858,8 +1341,9 @@ class Game:
 
                 if not self.paused:
                     for player in self.players:
-                        if not getattr(player, 'is_spectator', False):
+                        if not getattr(player, "is_spectator", False):
                             player.update(dt, current_time)
+
                     self.check_game_over()
 
                 if self.network_client:
@@ -872,37 +1356,37 @@ class Game:
                             key = f"{self.network_client.client_id}:{p.id}"
 
                             local_state[key] = {
-                                'client_id': self.network_client.client_id,
-                                'nickname': p.nickname,
-                                'color': f"#{p.color.r:02x}{p.color.g:02x}{p.color.b:02x}",
-                                'score': p.board.score,
-                                'lines': p.board.lines_cleared_total,
-                                'alive': p.alive,
-                                'level': p.level,
-                                'speed': min(10.0, p.speed + (p.level - 1) * 0.15),
-                                'time': int(
+                                "client_id": self.network_client.client_id,
+                                "nickname": p.nickname,
+                                "color": f"#{p.color.r:02x}{p.color.g:02x}{p.color.b:02x}",
+                                "score": p.board.score,
+                                "lines": p.board.lines_cleared_total,
+                                "alive": p.alive,
+                                "level": p.level,
+                                "speed": min(10.0, p.speed + (p.level - 1) * 0.15),
+                                "time": int(
                                     (p.game_over_time - self.start_time)
                                     if (not p.alive and p.game_over_time)
                                     else (time.time() - self.start_time)
                                 ),
-                                'grid': [
+                                "grid": [
                                     [1 if cell is not None else 0 for cell in row]
                                     for row in p.board.grid
                                 ],
-                                'next_shape': p.next_pieces[0].shape_name if p.next_pieces else None,
-                                'next_color': (
+                                "next_shape": p.next_pieces[0].shape_name if p.next_pieces else None,
+                                "next_color": (
                                     f"#{p.next_pieces[0].color.r:02x}"
                                     f"{p.next_pieces[0].color.g:02x}"
                                     f"{p.next_pieces[0].color.b:02x}"
                                     if p.next_pieces else "#FFFFFF"
                                 ),
-                                'hold_shape': p.hold_piece.shape_name if p.hold_piece else None,
-                                'hold_color': (
+                                "hold_shape": p.hold_piece.shape_name if p.hold_piece else None,
+                                "hold_color": (
                                     f"#{p.hold_piece.color.r:02x}"
                                     f"{p.hold_piece.color.g:02x}"
                                     f"{p.hold_piece.color.b:02x}"
                                     if p.hold_piece else "#FFFFFF"
-                                )
+                                ),
                             }
 
                         self._own_state_keys = set(local_state.keys())
@@ -922,6 +1406,7 @@ class Game:
 
             pygame.display.quit()
             pygame.quit()
+
             Log.info("🛑 Игра остановлена, ресурсы освобождены.")
 
     def handle_keydown(self, key):
@@ -935,20 +1420,21 @@ class Game:
 
             for action, k in active_keymap.items():
                 if isinstance(k, int):
-                    match = (key == k)
+                    match = key == k
                 else:
-                    event_name = pygame.key.name(key).lower().replace(' ', '')
-                    map_name = str(k).lower().replace(' ', '')
-                    match = (event_name == map_name)
+                    event_name = pygame.key.name(key).lower().replace(" ", "")
+                    map_name = str(k).lower().replace(" ", "")
+                    match = event_name == map_name
 
                 if match:
-                    if action in ['rotate', 'hard_drop', 'hold']:
+                    if action in ["rotate", "hard_drop", "hold"]:
                         player.handle_action(action)
                     else:
                         player.key_state[action] = True
 
-                    if self.game_mode == 'teacher_student' and player.id == 1:
+                    if self.game_mode == "teacher_student" and player.id == 1:
                         student = next((p for p in self.players if p.id == 2), None)
+
                         if student and student.bot and isinstance(student.bot, StudentAI):
                             student.bot.log_teacher_action(action)
 
@@ -963,22 +1449,33 @@ class Game:
 
             for action, k in active_keymap.items():
                 if isinstance(k, int):
-                    match = (key == k)
+                    match = key == k
                 else:
-                    event_name = pygame.key.name(key).lower().replace(' ', '')
-                    map_name = str(k).lower().replace(' ', '')
-                    match = (event_name == map_name)
+                    event_name = pygame.key.name(key).lower().replace(" ", "")
+                    map_name = str(k).lower().replace(" ", "")
+                    match = event_name == map_name
 
-                if match and action not in ['rotate', 'hard_drop', 'hold']:
+                if match and action not in ["rotate", "hard_drop", "hold"]:
                     player.key_state[action] = False
 
     def check_game_over(self):
-        if self.game_mode == '2vs2':
-            t1_alive = any(p.alive for p in self.teams[0]['players'])
-            t2_alive = any(p.alive for p in self.teams[1]['players'])
+        if self.game_mode == "2vs2":
+            t1_alive = any(p.alive for p in self.teams[0]["players"])
+            t2_alive = any(p.alive for p in self.teams[1]["players"])
 
             if not t1_alive or not t2_alive:
                 self.running = False
+
+        elif self.game_mode == "teacher_student":
+            teacher = next((p for p in self.players if p.id == 1), None)
+            student = next((p for p in self.players if p.id == 2), None)
+
+            if teacher and not teacher.alive:
+                self.running = False
+
+            if student and not student.alive:
+                self.running = False
+
         else:
             if not any(p.alive for p in self.players):
                 self.running = False
@@ -986,16 +1483,16 @@ class Game:
     def draw(self):
         self.screen.fill((30, 30, 30))
 
-        if self.game_mode in ['lan', 'global'] or self.settings.get('network_mode') in ['lan', 'online']:
+        if self.game_mode in ["lan", "global"] or self.settings.get("network_mode") in ["lan", "online"]:
             self.draw_network()
-        elif self.game_mode == 'coop':
+        elif self.game_mode == "coop":
             self.draw_coop()
-        elif self.game_mode == '2vs2':
+        elif self.game_mode == "2vs2":
             self.draw_2vs2()
         else:
             self.draw_vs()
 
-        if self.network_client and self.network_client.connection_status == 'failed':
+        if self.network_client and self.network_client.connection_status == "failed":
             overlay = pygame.Surface((self.layout_width, self.layout_height), pygame.SRCALPHA)
             overlay.fill((0, 0, 0, 160))
             self.screen.blit(overlay, (0, 0))
@@ -1005,20 +1502,21 @@ class Game:
 
             self.screen.blit(
                 err_text,
-                err_text.get_rect(center=(self.layout_width // 2, self.layout_height // 2 - 20))
+                err_text.get_rect(center=(self.layout_width // 2, self.layout_height // 2 - 20)),
             )
+
             self.screen.blit(
                 sub_text,
-                sub_text.get_rect(center=(self.layout_width // 2, self.layout_height // 2 + 20))
+                sub_text.get_rect(center=(self.layout_width // 2, self.layout_height // 2 + 20)),
             )
 
     def _parse_hex_color(self, color_str):
-        if isinstance(color_str, str) and color_str.startswith('#') and len(color_str) == 7:
+        if isinstance(color_str, str) and color_str.startswith("#") and len(color_str) == 7:
             try:
                 return (
                     int(color_str[1:3], 16),
                     int(color_str[3:5], 16),
-                    int(color_str[5:7], 16)
+                    int(color_str[5:7], 16),
                 )
             except ValueError:
                 return (255, 255, 255)
@@ -1038,7 +1536,7 @@ class Game:
                     pygame.draw.rect(
                         self.screen,
                         color,
-                        (x + c * cell_size, y + r * cell_size, cell_size, cell_size)
+                        (x + c * cell_size, y + r * cell_size, cell_size, cell_size),
                     )
 
     def draw_minimized_board(self, board, x, y, player_color, nickname="", mini_h=150):
@@ -1059,8 +1557,9 @@ class Game:
                         x + int(col * mini_cell_x),
                         y + int(row * mini_cell_y),
                         max(1, int(mini_cell_x)),
-                        max(1, int(mini_cell_y))
+                        max(1, int(mini_cell_y)),
                     )
+
                     pygame.draw.rect(self.screen, color, rect)
 
         if nickname:
@@ -1072,56 +1571,48 @@ class Game:
             return
 
         local_player = next((p for p in self.players if not p.is_bot), self.players[0])
-
         others = []
 
-        # Локальные не-главные игроки, например локальные боты.
         for p in self.players:
             if p is not local_player:
-                others.append(('local', p, None))
+                others.append(("local", p, None))
 
-        prefix = f"{self.client_id}:" if getattr(self, 'client_id', None) else None
-        own_state_keys = getattr(self, '_own_state_keys', set())
+        prefix = f"{self.client_id}:" if getattr(self, "client_id", None) else None
+        own_state_keys = getattr(self, "_own_state_keys", set())
 
-        # Идентификаторы локальных игроков для запасной фильтрации,
-        # если сервер не передаёт client_id.
         own_identity = set()
 
         for p in self.players:
-            own_identity.add((
-                p.nickname,
-                f"#{p.color.r:02x}{p.color.g:02x}{p.color.b:02x}"
-            ))
+            own_identity.add(
+                (
+                    p.nickname,
+                    f"#{p.color.r:02x}{p.color.g:02x}{p.color.b:02x}",
+                )
+            )
 
         for pid, pdata in self.remote_player_boards.items():
             if not isinstance(pdata, dict):
                 continue
 
-            # 1. Прямой фильтр по нашему префиксу.
             if prefix and isinstance(pid, str) and pid.startswith(prefix):
                 continue
 
-            # 2. Фильтр по ключам, которые мы сами отправили.
             if pid in own_state_keys:
                 continue
 
-            # 3. Фильтр по явному client_id внутри состояния.
-            remote_client_id = pdata.get('client_id')
+            remote_client_id = pdata.get("client_id")
 
             if remote_client_id is not None:
                 if remote_client_id == self.client_id:
                     continue
             else:
-                # 4. Фоллбек для серверов, которые не передают client_id.
-                # Если запись совпадает с локальным игроком, не показываем её.
-                identity = (pdata.get('nickname'), pdata.get('color'))
+                identity = (pdata.get("nickname"), pdata.get("color"))
 
                 if identity in own_identity:
                     continue
 
-            others.append(('remote', pid, pdata))
+            others.append(("remote", pid, pdata))
 
-        # Своё большое поле по центру.
         main_x = (self.layout_width - self.board_width_px) // 2
         main_y = max(20, (self.layout_height - self.board_height_px) // 2)
 
@@ -1129,6 +1620,7 @@ class Game:
 
         info_x = main_x
         info_y = main_y + self.board_height_px + 10
+
         self.draw_player_info(local_player, info_x, info_y)
 
         if not others:
@@ -1136,7 +1628,6 @@ class Game:
             self.screen.blit(hint, hint.get_rect(center=(self.layout_width // 2, 20)))
             return
 
-        # Мини-поля слева/справа.
         mini_w = 100
         info_w = 150
         side_gap = 20
@@ -1144,7 +1635,7 @@ class Game:
         left_x = max(10, main_x - side_gap - mini_w - info_w)
         right_x = min(
             self.layout_width - mini_w - info_w - 10,
-            main_x + self.board_width_px + side_gap
+            main_x + self.board_width_px + side_gap,
         )
 
         count_left = min(8, len(others))
@@ -1163,16 +1654,16 @@ class Game:
     def _draw_other_player(self, item, x, y, mini_h):
         kind, payload, pdata = item
 
-        if kind == 'local':
+        if kind == "local":
             p = payload
             self.draw_minimized_board(p.board, x, y, p.color, p.nickname, mini_h)
         else:
             self._draw_remote_minimized_board(pdata, x, y, mini_h)
 
     def _draw_remote_minimized_board(self, pdata, x, y, mini_h=150):
-        grid = pdata.get('grid') or []
-        color_str = pdata.get('color', '#FFFFFF')
-        nickname = pdata.get('nickname', 'Remote')
+        grid = pdata.get("grid") or []
+        color_str = pdata.get("color", "#FFFFFF")
+        nickname = pdata.get("nickname", "Remote")
         color = self._parse_hex_color(color_str)
 
         mini_cell_x = MINI_BOARD_WIDTH / WIDTH
@@ -1192,8 +1683,9 @@ class Game:
                         x + int(col * mini_cell_x),
                         y + int(row * mini_cell_y),
                         max(1, int(mini_cell_x)),
-                        max(1, int(mini_cell_y))
+                        max(1, int(mini_cell_y)),
                     )
+
                     pygame.draw.rect(self.screen, color, rect)
 
         text_x = x + w + 10
@@ -1201,49 +1693,53 @@ class Game:
 
         self.screen.blit(
             self.small_font.render(str(nickname)[:12], True, color),
-            (text_x, text_y)
-        )
-        self.screen.blit(
-            self.small_font.render(f"Score: {pdata.get('score', 0)}", True, (255, 255, 255)),
-            (text_x, text_y + 20)
-        )
-        self.screen.blit(
-            self.small_font.render(f"Lines: {pdata.get('lines', 0)}", True, (200, 200, 200)),
-            (text_x, text_y + 38)
+            (text_x, text_y),
         )
 
-        time_val = pdata.get('time', 0)
+        self.screen.blit(
+            self.small_font.render(f"Score: {pdata.get('score', 0)}", True, (255, 255, 255)),
+            (text_x, text_y + 20),
+        )
+
+        self.screen.blit(
+            self.small_font.render(f"Lines: {pdata.get('lines', 0)}", True, (200, 200, 200)),
+            (text_x, text_y + 38),
+        )
+
+        time_val = pdata.get("time", 0)
+
         self.screen.blit(
             self.small_font.render(f"Time: {time_val}s", True, (255, 255, 255)),
-            (text_x, text_y + 56)
+            (text_x, text_y + 56),
         )
 
         self.screen.blit(
             self.small_font.render("Next:", True, (255, 255, 255)),
-            (text_x, text_y + 80)
+            (text_x, text_y + 80),
         )
 
-        if pdata.get('next_shape'):
-            next_color = self._parse_hex_color(pdata.get('next_color', '#FFFFFF'))
-            self._draw_remote_piece_preview(pdata['next_shape'], next_color, text_x + 45, text_y + 82)
+        if pdata.get("next_shape"):
+            next_color = self._parse_hex_color(pdata.get("next_color", "#FFFFFF"))
+            self._draw_remote_piece_preview(pdata["next_shape"], next_color, text_x + 45, text_y + 82)
 
         self.screen.blit(
             self.small_font.render("Hold:", True, (255, 255, 255)),
-            (text_x, text_y + 105)
+            (text_x, text_y + 105),
         )
 
-        if pdata.get('hold_shape'):
-            hold_color = self._parse_hex_color(pdata.get('hold_color', '#FFFFFF'))
-            self._draw_remote_piece_preview(pdata['hold_shape'], hold_color, text_x + 45, text_y + 107)
+        if pdata.get("hold_shape"):
+            hold_color = self._parse_hex_color(pdata.get("hold_color", "#FFFFFF"))
+            self._draw_remote_piece_preview(pdata["hold_shape"], hold_color, text_x + 45, text_y + 107)
 
     def draw_vs(self):
         for idx, player in enumerate(self.players):
             x, y = self.layout_positions[idx]
 
             nick_surf = self.font.render(player.nickname, True, player.color)
+
             self.screen.blit(
                 nick_surf,
-                (x + self.board_width_px // 2 - nick_surf.get_width() // 2, y - 30)
+                (x + self.board_width_px // 2 - nick_surf.get_width() // 2, y - 30),
             )
 
             self.draw_board(player.board, x, y, player)
@@ -1251,7 +1747,6 @@ class Game:
 
     def draw_coop(self):
         x, y = self.board_position
-
         spacing = 150
         start_x = (self.layout_width - spacing * self.num_players) // 2 + 20
 
@@ -1273,19 +1768,20 @@ class Game:
             x, y = self.team_positions[i]
 
             team_label = self.font.render(f"TEAM {i + 1}", True, (200, 200, 200))
+
             self.screen.blit(
                 team_label,
-                (x + self.board_width_px // 2 - team_label.get_width() // 2, y - 25)
+                (x + self.board_width_px // 2 - team_label.get_width() // 2, y - 25),
             )
 
-            board = self.teams[i]['board']
-            active = next((p for p in self.teams[i]['players'] if p.alive and p.current_piece), None)
+            board = self.teams[i]["board"]
+            active = next((p for p in self.teams[i]["players"] if p.alive and p.current_piece), None)
 
             self.draw_board(board, x, y, active)
 
             info_y = y + self.board_height_px + 5
 
-            for j, p in enumerate(self.teams[i]['players']):
+            for j, p in enumerate(self.teams[i]["players"]):
                 self.draw_player_info(p, x + j * 150, info_y)
 
     def draw_board(self, board, x, y, active_player=None):
@@ -1293,7 +1789,7 @@ class Game:
             self.screen,
             (100, 100, 100),
             (x - 2, y - 2, board.width * CELL_SIZE + 4, board.height * CELL_SIZE + 4),
-            2
+            2,
         )
 
         for row in range(board.height):
@@ -1308,8 +1804,8 @@ class Game:
 
         if active_player and active_player.current_piece and active_player.alive:
             piece = active_player.current_piece
-
             ghost = copy.deepcopy(piece)
+
             board.drop_height(ghost)
 
             for cx, cy in ghost.get_cells():
@@ -1323,13 +1819,14 @@ class Game:
                     pygame.draw.rect(
                         self.screen,
                         piece.color,
-                        (x + cx * CELL_SIZE, y + cy * CELL_SIZE, CELL_SIZE, CELL_SIZE)
+                        (x + cx * CELL_SIZE, y + cy * CELL_SIZE, CELL_SIZE, CELL_SIZE),
                     )
+
                     pygame.draw.rect(
                         self.screen,
                         (255, 255, 255),
                         (x + cx * CELL_SIZE, y + cy * CELL_SIZE, CELL_SIZE, CELL_SIZE),
-                        1
+                        1,
                     )
 
     def draw_player_info(self, player, x, y):
@@ -1345,19 +1842,21 @@ class Game:
 
         self.screen.blit(
             self.small_font.render(f"Score: {player.board.score}", True, (255, 255, 255)),
-            (x, y + 50)
+            (x, y + 50),
         )
+
         self.screen.blit(
             self.small_font.render(f"Lines: {player.board.lines_cleared_total}", True, (200, 200, 200)),
-            (x, y + 68)
+            (x, y + 68),
         )
+
         self.screen.blit(
             self.small_font.render(
                 f"Lvl: {player.level} | Spd: {min(10.0, player.speed + (player.level - 1) * 0.15):.1f}",
                 True,
-                (200, 200, 200)
+                (200, 200, 200),
             ),
-            (x, y + 86)
+            (x, y + 86),
         )
 
         time_val = (
@@ -1368,7 +1867,7 @@ class Game:
 
         self.screen.blit(
             self.small_font.render(f"Time: {int(time_val)}s", True, (255, 255, 255)),
-            (x, y + 104)
+            (x, y + 104),
         )
 
     def draw_piece_preview(self, piece, x, y):
@@ -1378,13 +1877,14 @@ class Game:
                     pygame.draw.rect(
                         self.screen,
                         piece.color,
-                        (x + c * CELL_SIZE, y + r * CELL_SIZE, CELL_SIZE, CELL_SIZE)
+                        (x + c * CELL_SIZE, y + r * CELL_SIZE, CELL_SIZE, CELL_SIZE),
                     )
+
                     pygame.draw.rect(
                         self.screen,
                         (255, 255, 255),
                         (x + c * CELL_SIZE, y + r * CELL_SIZE, CELL_SIZE, CELL_SIZE),
-                        1
+                        1,
                     )
 
     def draw_pause_overlay(self):
@@ -1402,13 +1902,14 @@ class Game:
             self.layout_width // 2 - btn_w // 2,
             self.layout_height // 2,
             btn_w,
-            btn_h
+            btn_h,
         )
+
         self.btn_quit = pygame.Rect(
             self.layout_width // 2 - btn_w // 2,
             self.layout_height // 2 + 70,
             btn_w,
-            btn_h
+            btn_h,
         )
 
         mouse_pos = pygame.mouse.get_pos()
@@ -1434,14 +1935,13 @@ class NetworkClient:
         room_name: str,
         is_host: bool,
         player_info: Dict[str, Any],
-        client_id: Optional[str] = None
+        client_id: Optional[str] = None,
     ):
         self.host = host
         self.port = port
         self.room_name = room_name
         self.is_host = is_host
         self.player_info = player_info
-
         self.client_id = client_id or uuid.uuid4().hex[:8]
 
         self.room_id: Optional[str] = None
@@ -1451,10 +1951,11 @@ class NetworkClient:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._thread: Optional[threading.Thread] = None
         self._running = False
+
         self._writer: Optional[asyncio.StreamWriter] = None
         self._reader: Optional[asyncio.StreamReader] = None
 
-        self.connection_status = 'connecting'
+        self.connection_status = "connecting"
         self.connection_error = ""
 
     def start(self) -> None:
@@ -1470,27 +1971,25 @@ class NetworkClient:
     async def _connect_and_listen(self) -> None:
         try:
             self._reader, self._writer = await asyncio.open_connection(self.host, self.port)
-            self.connection_status = 'connected'
+            self.connection_status = "connected"
 
             if self.is_host:
                 msg = {
                     "action": "create_room",
                     "room_id": self.room_name,
                     "game_mode": "coop",
-                    "player_info": self.player_info
+                    "player_info": self.player_info,
                 }
             else:
                 msg = {
                     "action": "join_room",
                     "room_id": self.room_name,
-                    "player_info": self.player_info
+                    "player_info": self.player_info,
                 }
 
-            self._writer.write((json.dumps(msg) + '\n').encode('utf-8'))
+            self._writer.write((json.dumps(msg) + "\n").encode("utf-8"))
             await self._writer.drain()
 
-            # Не ждём подтверждения сервера, чтобы можно было отправлять состояние
-            # сразу после подключения.
             if not self.room_id:
                 self.room_id = self.room_name
 
@@ -1500,11 +1999,11 @@ class NetworkClient:
                 if not line:
                     break
 
-                msg = json.loads(line.decode('utf-8').strip())
+                msg = json.loads(line.decode("utf-8").strip())
                 self._process_message(msg)
 
         except Exception as e:
-            self.connection_status = 'failed'
+            self.connection_status = "failed"
             self.connection_error = str(e)
             Log.error(f"🌐 Ошибка сети: {e}")
 
@@ -1515,38 +2014,38 @@ class NetworkClient:
                 self._writer.close()
 
     def _process_message(self, msg: Dict[str, Any]) -> None:
-        action = msg.get('action')
+        action = msg.get("action")
 
-        if action in ('room_created', 'room_joined'):
-            self.room_id = msg.get('room_id', self.room_name)
-            self.is_spectator = msg.get('is_spectator', False)
+        if action in ("room_created", "room_joined"):
+            self.room_id = msg.get("room_id", self.room_name)
+            self.is_spectator = msg.get("is_spectator", False)
 
-            for pid, pinfo in msg.get('players', {}).items():
+            for pid, pinfo in msg.get("players", {}).items():
                 if self._is_own_entry(pid, pinfo):
                     continue
 
                 if pid not in self.remote_players:
                     self.remote_players[pid] = pinfo
 
-        elif action == 'state_update':
-            incoming = msg.get('state', {})
+        elif action == "state_update":
+            incoming = msg.get("state", {})
 
             incoming = {
-                pid: info for pid, info in incoming.items()
+                pid: info
+                for pid, info in incoming.items()
                 if not self._is_own_entry(pid, info)
             }
 
             self.remote_players.update(incoming)
 
-            # На всякий случай вычищаем собственные записи, если они вдруг уже были.
             for pid in list(self.remote_players.keys()):
                 if self._is_own_entry(pid, self.remote_players[pid]):
                     self.remote_players.pop(pid, None)
 
-        elif action in ('player_joined', 'player_left'):
-            players = msg.get('players', {})
+        elif action in ("player_joined", "player_left"):
+            players = msg.get("players", {})
 
-            if action == 'player_joined':
+            if action == "player_joined":
                 for pid, pinfo in players.items():
                     if self._is_own_entry(pid, pinfo):
                         continue
@@ -1555,25 +2054,27 @@ class NetworkClient:
                         self.remote_players[pid] = pinfo
             else:
                 players = {
-                    pid: info for pid, info in players.items()
+                    pid: info
+                    for pid, info in players.items()
                     if not self._is_own_entry(pid, info)
                 }
 
                 self.remote_players = {
-                    k: v for k, v in self.remote_players.items()
+                    k: v
+                    for k, v in self.remote_players.items()
                     if k in players
                 }
 
-        elif action == 'error':
-            self.connection_status = 'failed'
-            self.connection_error = msg.get('message', 'Unknown error')
+        elif action == "error":
+            self.connection_status = "failed"
+            self.connection_error = msg.get("message", "Unknown error")
             Log.error(f"🌐 Ошибка сервера: {self.connection_error}")
 
     def _is_own_entry(self, pid: str, pinfo: Dict[str, Any]) -> bool:
         if isinstance(pid, str) and pid.startswith(f"{self.client_id}:"):
             return True
 
-        if isinstance(pinfo, dict) and pinfo.get('client_id') == self.client_id:
+        if isinstance(pinfo, dict) and pinfo.get("client_id") == self.client_id:
             return True
 
         return False
@@ -1583,14 +2084,15 @@ class NetworkClient:
             msg = {
                 "action": "update_state",
                 "room_id": self.room_id,
-                "state": state
+                "state": state,
             }
+
             asyncio.run_coroutine_threadsafe(self._send_msg(msg), self._loop)
 
     async def _send_msg(self, msg: Dict[str, Any]) -> None:
         if self._writer:
             try:
-                self._writer.write((json.dumps(msg) + '\n').encode('utf-8'))
+                self._writer.write((json.dumps(msg) + "\n").encode("utf-8"))
                 await self._writer.drain()
             except Exception:
                 pass
