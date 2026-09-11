@@ -81,9 +81,11 @@ LINE_SCORES = {1: 100, 2: 250, 3: 500, 4: 1000}
 
 GAME_MODES = ["vs", "coop", "2vs2", "lan", "global", "self_learning", "teacher_student"]
 
-SELF_LEARNING_DEFAULT_ITERATIONS = 20
-SELF_LEARNING_MUTATION_RATE = 0.05
-TEACHER_STUDENT_DELAY = 5
+SELF_LEARNING_POPULATION = 24
+SELF_LEARNING_ELITE_SIZE = 6
+SELF_LEARNING_MUTATION_CHANCE = 0.35
+SELF_LEARNING_MUTATION_STRENGTH = 0.10
+SELF_LEARNING_RANDOM_IMMIGRANT_CHANCE = 0.08
 
 
 class Log:
@@ -657,15 +659,22 @@ class StudentAI(BaseAI):
         return result
 
 class SelfLearningEngine:
-    def __init__(self, iterations: int, ai_type: str, base_config: dict,
-                 start_from_zero: bool = False,
-                 show_gameplay_callback=None):
+    def __init__(
+        self,
+        iterations: int,
+        ai_type: str,
+        base_config: dict,
+        start_from_zero: bool = False,
+        show_gameplay_callback=None
+    ):
         try:
             iterations = int(iterations)
         except Exception:
             iterations = SELF_LEARNING_DEFAULT_ITERATIONS
+
         if iterations == 0:
             iterations = 1
+
         self.iterations = iterations
         self.ai_type = ai_type
         self.start_from_zero = start_from_zero
@@ -680,67 +689,116 @@ class SelfLearningEngine:
         }
 
         if self.start_from_zero:
-            self.weights = {k: 0.0 for k in default_weights}
+            base = {k: 0.0 for k in default_weights}
         else:
-            self.weights = dict(base_config) if base_config else {}
+            base = dict(base_config) if base_config else {}
             for key, value in default_weights.items():
-                self.weights.setdefault(key, value)
+                base.setdefault(key, value)
 
-        self.best_weights = dict(self.weights)
+        self.base_weights = self._sanitize_weights(base)
+        self.weights = dict(self.base_weights)
+
+        self.best_weights = dict(self.base_weights)
         self.best_score = -1
+        self.best_lines = 0
+
+        self.population = []
+        self.population_size = max(4, int(SELF_LEARNING_POPULATION))
+        self.elite_size = max(
+            1,
+            min(int(SELF_LEARNING_ELITE_SIZE), self.population_size // 3)
+        )
+
         self.stats = []
         self.stats_limit = 1000
         self.iterations_done = 0
+
         self.rotations = self._precompute_rotations()
 
-    def _precompute_rotations(self):
-        rotations = {}
-        for name, shape in SHAPES.items():
-            rots = [shape]
-            current = [row[:] for row in shape]
-            for _ in range(3):
-                current = [list(row) for row in zip(*current[::-1])]
-                rots.append(current)
-            rotations[name] = rots
-        return rotations
+    def _sanitize_weights(self, weights: dict) -> dict:
+        result = {}
+
+        for key, value in (weights or {}).items():
+            try:
+                result[str(key)] = max(-2.0, min(2.0, float(value)))
+            except Exception:
+                continue
+
+        if not result:
+            result = {
+                "height": -0.51,
+                "lines": 0.76,
+                "holes": -0.36,
+                "bumpiness": -0.18,
+                "well_depth": -0.15,
+            }
+
+        return result
 
     def run(self, on_iter_callback=None, stop_event=None):
         infinite = self.iterations < 0
         i = 0
+
         while True:
             if stop_event is not None and stop_event.is_set():
                 break
+
             i += 1
+
             if not infinite and i > self.iterations:
                 break
-            if i > 1:
-                self._mutate()
-            score, lines, elapsed = self._run_one(stop_event=stop_event)
+
+            candidate_weights = self._next_candidate()
+            score, lines, elapsed = self._evaluate_candidate(
+                candidate_weights,
+                stop_event=stop_event
+            )
+
+            self._add_candidate(candidate_weights, score, lines)
+
+            if score > self.best_score or (
+                score == self.best_score and lines > self.best_lines
+            ):
+                self.best_score = score
+                self.best_lines = lines
+                self.best_weights = dict(candidate_weights)
+
             entry = {
                 "iter": i,
-                "score": score,
-                "lines": lines,
+                "score": int(round(score)),
+                "lines": int(lines),
                 "time": round(elapsed, 2),
+                "best": int(round(self.best_score)),
+                "top": int(round(self.population[0]["score"])) if self.population else int(round(score)),
             }
+
             self.stats.append(entry)
+
             if len(self.stats) > self.stats_limit * 2:
                 self.stats = self.stats[-self.stats_limit:]
+
             self.iterations_done += 1
+
             if on_iter_callback:
                 try:
                     if on_iter_callback(entry) is False:
                         break
                 except Exception:
                     pass
-            if score > self.best_score:
-                self.best_score = score
-                self.best_weights = dict(self.weights)
-            if (not infinite) or (i % 25 == 0):
+
+            if i % 25 == 0:
                 Log.info(
                     f"🧬 Self-learning итерация {i}"
                     f"{'/∞' if infinite else f'/{self.iterations}'}: "
-                    f"score={score}, lines={lines}, time={elapsed:.2f}s"
+                    f"score={entry['score']}, lines={entry['lines']}, "
+                    f"best={entry['best']}, time={elapsed:.2f}s"
                 )
+
+        if self.best_score < 0:
+            self.best_score = 0
+
+        self.weights = dict(self.best_weights)
+
         return {
             "best_score": self.best_score,
             "best_weights": self.best_weights,
@@ -749,102 +807,198 @@ class SelfLearningEngine:
             "stopped": bool(stop_event is not None and stop_event.is_set()),
         }
 
-    def _mutate(self):
-        for key in list(self.weights.keys()):
-            if random.random() < SELF_LEARNING_MUTATION_RATE:
-                try:
-                    self.weights[key] = float(self.weights[key]) + random.uniform(-0.08, 0.08)
-                    self.weights[key] = max(-2.0, min(2.0, self.weights[key]))
-                except Exception:
-                    continue
+    def _next_candidate(self) -> dict:
+        if not self.population:
+            return dict(self.base_weights)
 
-    def _mutate_on_step(self, lines_cleared, holes_delta):
-        rate = 0.002
-        if lines_cleared > 0:
-            self.weights["lines"] = min(2.0, self.weights.get("lines", 0.0) + rate * lines_cleared)
-            self.weights["height"] = max(-2.0, self.weights.get("height", 0.0) - rate * 0.5)
-        if holes_delta > 0:
-            self.weights["holes"] = max(-2.0, self.weights.get("holes", 0.0) - rate * holes_delta)
-        elif holes_delta < 0:
-            self.weights["holes"] = min(2.0, self.weights.get("holes", 0.0) + rate * abs(holes_delta))
-        for key in self.weights:
-            if random.random() < 0.05:
-                self.weights[key] = max(-2.0, min(2.0,
-                    self.weights[key] + random.uniform(-rate, rate)))
+        if random.random() < SELF_LEARNING_RANDOM_IMMIGRANT_CHANCE:
+            return self._random_exploration_weights()
 
-    def _count_holes(self, grid, width, height):
-        holes = 0
-        for col in range(width):
-            top_row = None
-            for row in range(height):
-                if grid[row][col] is not None:
-                    top_row = row
-                    break
-            if top_row is not None:
-                for row in range(top_row + 1, height):
-                    if grid[row][col] is None:
-                        holes += 1
-        return holes
+        if len(self.population) < self.population_size and random.random() < 0.25:
+            return self._random_exploration_weights()
+
+        parent = self._select_parent()
+        return self._mutate_weights(parent["weights"])
+
+    def _select_parent(self) -> dict:
+        top_n = max(1, min(self.elite_size, len(self.population)))
+        top = self.population[:top_n]
+
+        weights = list(range(top_n, 0, -1))
+
+        return random.choices(top, weights=weights, k=1)[0]
+
+    def _add_candidate(self, weights: dict, score: float, lines: int):
+        self.population.append(
+            {
+                "weights": self._sanitize_weights(weights),
+                "score": float(score),
+                "lines": int(lines),
+            }
+        )
+
+        self.population.sort(
+            key=lambda item: (item["score"], item["lines"]),
+            reverse=True
+        )
+
+        if len(self.population) > self.population_size:
+            self.population.pop()
+
+    def _random_exploration_weights(self) -> dict:
+        if self.best_score > -1 and random.random() < 0.65:
+            source = self.best_weights
+        else:
+            source = self.base_weights
+
+        return self._mutate_weights(
+            source,
+            chance=0.75,
+            strength=SELF_LEARNING_MUTATION_STRENGTH * 2.5
+        )
+
+    def _mutate_weights(
+        self,
+        src: dict,
+        chance: float = None,
+        strength: float = None
+    ) -> dict:
+        if chance is None:
+            chance = SELF_LEARNING_MUTATION_CHANCE
+
+        if strength is None:
+            strength = SELF_LEARNING_MUTATION_STRENGTH
+
+        src = self._sanitize_weights(src)
+        child = {}
+        mutated = False
+
+        keys = list(src.keys())
+
+        if not keys:
+            return dict(self.base_weights)
+
+        for key in keys:
+            value = float(src[key])
+
+            if random.random() < chance:
+                value += random.uniform(-strength, strength)
+                mutated = True
+
+            child[key] = max(-2.0, min(2.0, value))
+
+        if not mutated:
+            key = random.choice(keys)
+            child[key] = max(
+                -2.0,
+                min(
+                    2.0,
+                    float(src[key]) + random.uniform(-strength, strength)
+                )
+            )
+
+        return child
+
+    def _evaluate_candidate(self, weights: dict, stop_event=None):
+        self.weights = dict(weights)
+        return self._run_one(stop_event=stop_event)
+
+    def _precompute_rotations(self):
+        rotations = {}
+
+        for name, shape in SHAPES.items():
+            rots = [shape]
+            current = [row[:] for row in shape]
+
+            for _ in range(3):
+                current = [list(row) for row in zip(*current[::-1])]
+                rots.append(current)
+
+            rotations[name] = rots
+
+        return rotations
 
     def _fast_drop(self, shape, grid, width, height, offset_x):
         shape_height = len(shape)
         y = 0
+
         while y + shape_height <= height:
             collides = False
+
             for r, row in enumerate(shape):
                 for c, val in enumerate(row):
                     if val:
                         nx = offset_x + c
                         ny = y + r
+
                         if nx < 0 or nx >= width or grid[ny][nx] is not None:
                             collides = True
                             break
+
                 if collides:
                     break
+
             if collides:
                 break
+
             y += 1
+
         return y - 1
 
     def _evaluate(self, shape, x, drop_y, grid, width, height):
         sim_grid = [row[:] for row in grid]
+
         for r, row in enumerate(shape):
             for c, val in enumerate(row):
                 if val:
                     yy = drop_y + r
                     xx = x + c
+
                     if yy < 0 or yy >= height or xx < 0 or xx >= width:
                         return float("-inf")
+
                     sim_grid[yy][xx] = 1
+
         heights = [0] * width
         holes = 0
         lines = 0
         bumpiness = 0
+
         for col in range(width):
             top_row = None
+
             for row in range(height):
                 if sim_grid[row][col] is not None:
                     top_row = row
                     break
+
             if top_row is not None:
                 heights[col] = height - top_row
+
                 for row in range(top_row + 1, height):
                     if sim_grid[row][col] is None:
                         holes += 1
+
         for row in range(height):
             if all(sim_grid[row][col] is not None for col in range(width)):
                 lines += 1
+
         for col in range(width - 1):
             bumpiness += abs(heights[col] - heights[col + 1])
+
         well_depth = 0
+
         for col in range(1, width - 1):
             current = heights[col]
             left = heights[col - 1]
             right = heights[col + 1]
+
             if current < left and current < right:
                 well_depth += min(left, right) - current
+
         avg_height = sum(heights) / width if width else 0
         max_height = max(heights) if heights else 0
+
         return (
             self.weights.get("height", -0.51) * avg_height
             + self.weights.get("lines", 0.76) * lines
@@ -856,32 +1010,55 @@ class SelfLearningEngine:
 
     def _run_one(self, stop_event=None):
         start_time = time.time()
+
         board = Board(WIDTH, HEIGHT)
         shape_names = list(SHAPES.keys())
+
         piece = Piece(random.choice(shape_names), (255, 255, 255))
+
         max_pieces = 350
         placed_pieces = 0
 
         while placed_pieces < max_pieces:
             if stop_event is not None and stop_event.is_set():
                 break
+
             if not board.is_valid_position(piece):
                 break
 
-            holes_before = self._count_holes(board.grid, board.width, board.height)
-
             best_score = float("-inf")
             best_placement = None
+
             for shape in self.rotations[piece.shape_name]:
                 shape_width = len(shape[0])
+
                 if shape_width > board.width:
                     continue
+
                 for x in range(0, board.width - shape_width + 1):
-                    y = self._fast_drop(shape, board.grid, board.width, board.height, x)
+                    y = self._fast_drop(
+                        shape,
+                        board.grid,
+                        board.width,
+                        board.height,
+                        x
+                    )
+
                     if y < 0:
                         continue
-                    score = self._evaluate(shape, x, y, board.grid, board.width, board.height)
-                    if score > best_score or (score == best_score and random.random() < 0.3):
+
+                    score = self._evaluate(
+                        shape,
+                        x,
+                        y,
+                        board.grid,
+                        board.width,
+                        board.height
+                    )
+
+                    if score > best_score or (
+                        score == best_score and random.random() < 0.3
+                    ):
                         best_score = score
                         best_placement = (shape, x, y)
 
@@ -889,6 +1066,7 @@ class SelfLearningEngine:
                 break
 
             shape, x, y = best_placement
+
             for r, row in enumerate(shape):
                 for c, val in enumerate(row):
                     if val and y + r >= 0:
@@ -897,10 +1075,6 @@ class SelfLearningEngine:
             lines = board.clear_lines()
             board.lines_cleared_total += lines
             board.score += LINE_SCORES.get(lines, 0)
-
-            holes_after = self._count_holes(board.grid, board.width, board.height)
-            holes_delta = holes_after - holes_before
-            self._mutate_on_step(lines, holes_delta)
 
             if self.show_gameplay_callback:
                 self.show_gameplay_callback(
@@ -918,6 +1092,7 @@ class SelfLearningEngine:
             piece = Piece(random.choice(shape_names), piece.color)
 
         elapsed = time.time() - start_time
+
         return board.score, board.lines_cleared_total, elapsed
 
 class Player:
