@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import tkinter as tk
 from tkinter import ttk, colorchooser, messagebox, filedialog, simpledialog
 from tkinter.font import Font
@@ -7,14 +8,63 @@ import hashlib
 import os
 import threading
 import queue
+import time
 from datetime import datetime
 import pygame
-from tetris import Game, SelfLearningEngine, WIDTH, HEIGHT
 from rich.console import Console
+
+# --- Импорт из tetris.py (с fallback если геймпады ещё не добавлены) ---
+try:
+    from tetris import (
+        Game, SelfLearningEngine, WIDTH, HEIGHT,
+        GamepadConfig, GAMEPAD_AXIS_THRESHOLD,
+    )
+except ImportError:
+    from tetris import Game, SelfLearningEngine, WIDTH, HEIGHT
+    GAMEPAD_AXIS_THRESHOLD = 0.5
+
+    class GamepadConfig:
+        """Fallback-конфигурация биндов геймпада (если в tetris.py её нет)"""
+        def __init__(self):
+            self.binds = {
+                "left":      {"type": "hat", "hat": 0, "direction": [-1, 0]},
+                "right":     {"type": "hat", "hat": 0, "direction": [1, 0]},
+                "soft_drop": {"type": "hat", "hat": 0, "direction": [0, -1]},
+                "rotate":    {"type": "button", "value": 0},
+                "hard_drop": {"type": "button", "value": 2},
+                "hold":      {"type": "button", "value": 3},
+            }
+            self.axis_binds = {
+                "left":      {"axis": 0, "direction": -1},
+                "right":     {"axis": 0, "direction": 1},
+                "soft_drop": {"axis": 1, "direction": 1},
+            }
+            self.use_axes = True
+
+        def to_dict(self) -> dict:
+            return {
+                "binds": self.binds,
+                "axis_binds": self.axis_binds,
+                "use_axes": self.use_axes,
+            }
+
+        @classmethod
+        def from_dict(cls, data: dict) -> 'GamepadConfig':
+            config = cls()
+            if not data:
+                return config
+            if "binds" in data:
+                config.binds = data["binds"]
+            if "axis_binds" in data:
+                config.axis_binds = data["axis_binds"]
+            if "use_axes" in data:
+                config.use_axes = data["use_axes"]
+            return config
 
 console = Console()
 
 
+# ================= LOG =================
 class Log:
     @staticmethod
     def info(msg: str, timestamp: bool = True, **kwargs):
@@ -34,7 +84,6 @@ class Log:
 
 
 # ================= DATABASE =================
-
 DB_NAME = "tetris_db.sqlite"
 
 DEFAULT_AI_PARAMS = {
@@ -48,19 +97,35 @@ DEFAULT_AI_PARAMS = {
 AI_PRESETS = {
     "custom": DEFAULT_AI_PARAMS.copy(),
     "qwen": {
-        "height": -0.62,
-        "lines": 0.95,
-        "holes": -0.85,
-        "bumpiness": -0.24,
-        "well_depth": -0.18,
+        "height": -0.62, "lines": 0.95, "holes": -0.85,
+        "bumpiness": -0.24, "well_depth": -0.18,
     },
     "deepseek": {
-        "height": -0.55,
-        "lines": 1.10,
-        "holes": -0.95,
-        "bumpiness": -0.22,
-        "well_depth": -0.12,
+        "height": -0.55, "lines": 1.10, "holes": -0.95,
+        "bumpiness": -0.22, "well_depth": -0.12,
     },
+    "chatgpt": {
+        "height": -0.56, "lines": 1.15, "holes": -1.15,
+        "bumpiness": -0.30, "well_depth": -0.10,
+    },
+}
+
+# --- Индивидуальные бинды клавиатуры по умолчанию для каждого игрока ---
+DEFAULT_KEYBINDS = {
+    1: {"hard_drop": "q", "rotate": "w", "left": "a", "right": "d", "soft_drop": "s", "hold": "e"},
+    2: {"hard_drop": "r", "rotate": "t", "left": "f", "right": "h", "soft_drop": "g", "hold": "y"},
+    3: {"hard_drop": "u", "rotate": "i", "left": "j", "right": "l", "soft_drop": "k", "hold": "o"},
+    4: {"hard_drop": "rshift", "rotate": "up", "left": "left", "right": "right", "soft_drop": "down", "hold": "rctrl"},
+}
+
+# --- Бинды геймпада по умолчанию ---
+DEFAULT_GAMEPAD_BINDS = {
+    "hold":      {"type": "button", "value": 3},   # Y
+    "rotate":    {"type": "button", "value": 0},   # A
+    "left":      {"type": "hat", "hat": 0, "direction": [-1, 0]},  # D-Pad Left
+    "right":     {"type": "hat", "hat": 0, "direction": [1, 0]},   # D-Pad Right
+    "hard_drop": {"type": "button", "value": 2},   # X
+    "soft_drop": {"type": "hat", "hat": 0, "direction": [0, -1]},  # D-Pad Down
 }
 
 
@@ -88,13 +153,6 @@ def normalize_tags(tags):
 
 
 def parse_iterations(value):
-    """
-    Supports:
-    -1 -> infinite
-    10^10
-    10 10
-    normal ints
-    """
     s = str(value).strip().replace(" ", "^")
     while "^^" in s:
         s = s.replace("^^", "^")
@@ -124,7 +182,6 @@ def init_db():
             password_hash TEXT
         )
     """)
-
     migration_queries = [
         "ALTER TABLE users ADD COLUMN default_nickname TEXT DEFAULT ''",
         "ALTER TABLE users ADD COLUMN favorite_color TEXT DEFAULT '#FF4444'",
@@ -135,7 +192,6 @@ def init_db():
             c.execute(query)
         except sqlite3.OperationalError:
             pass
-
     c.execute("""
         CREATE TABLE IF NOT EXISTS leaderboard (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -145,7 +201,6 @@ def init_db():
             date TEXT
         )
     """)
-
     c.execute("""
         CREATE TABLE IF NOT EXISTS CustomAlgModels (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -159,7 +214,6 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_custom_alg_models_timestamp
         ON CustomAlgModels(timestamp DESC)
     """)
-
     try:
         c.execute('SELECT 1 FROM "CustomAI-params" LIMIT 1')
         c.execute("""
@@ -173,9 +227,28 @@ def init_db():
         """)
     except sqlite3.OperationalError:
         pass
-
     conn.commit()
     conn.close()
+
+
+def record_game_results(game, current_user):
+    """Записывает результат каждого игрока после завершения каждой игры."""
+    if game is None or not hasattr(game, "players"):
+        return
+    conn = sqlite3.connect(DB_NAME)
+    try:
+        c = conn.cursor()
+        now = datetime.now().isoformat(timespec="seconds")
+        for player in game.players:
+            display_name = getattr(player, "nickname", None) or str(current_user or "Guest")
+            c.execute(
+                "INSERT INTO leaderboard (username, score, is_bot, date) VALUES (?, ?, ?, ?)",
+                (display_name, int(getattr(player.board, "score", 0)),
+                 int(bool(getattr(player, "is_bot", False))), now),
+            )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def hash_password(password: str) -> str:
@@ -197,7 +270,6 @@ def get_user_profile(username: str) -> dict:
         row = None
     finally:
         conn.close()
-
     if not row:
         return {
             "default_nickname": username,
@@ -218,9 +290,7 @@ def model_exists(name: str) -> bool:
     conn = sqlite3.connect(DB_NAME)
     cur = conn.cursor()
     try:
-        cur.execute("""
-            SELECT 1 FROM CustomAlgModels WHERE name = ? LIMIT 1
-        """, (name,))
+        cur.execute("SELECT 1 FROM CustomAlgModels WHERE name = ? LIMIT 1", (name,))
         row = cur.fetchone()
     finally:
         conn.close()
@@ -248,7 +318,6 @@ def save_custom_alg_model(name: str, params: dict, tags=None) -> int:
     if not name:
         raise ValueError("Model name is not set.")
     tags = normalize_tags(tags)
-
     safe_params = {}
     for key, value in (params or DEFAULT_AI_PARAMS).items():
         try:
@@ -257,11 +326,9 @@ def save_custom_alg_model(name: str, params: dict, tags=None) -> int:
             continue
     if not safe_params:
         safe_params = DEFAULT_AI_PARAMS.copy()
-
     timestamp = datetime.now().isoformat(timespec="seconds")
     params_json = json.dumps(safe_params, ensure_ascii=False)
     tags_json = json.dumps(tags, ensure_ascii=False)
-
     conn = sqlite3.connect(DB_NAME)
     cur = conn.cursor()
     cur.execute("""
@@ -271,7 +338,7 @@ def save_custom_alg_model(name: str, params: dict, tags=None) -> int:
     model_id = cur.lastrowid
     conn.commit()
     conn.close()
-    return model_id
+    return model_id if model_id else 0
 
 
 def list_custom_alg_models(limit: int = 100) -> list:
@@ -325,7 +392,6 @@ def get_custom_alg_model(model_id: int):
     return item
 
 
-# Aliases for compatibility
 def save_custom_ai_model(model_name: str, params: dict, tags=None,
                          source: str = "custom", owner: str = "") -> int:
     tags = normalize_tags(tags)
@@ -345,7 +411,6 @@ def get_custom_ai_model(model_id: int):
 
 
 # ================= AUTH UI =================
-
 class AuthWindow:
     def __init__(self, root, on_success):
         self.root = root
@@ -365,10 +430,8 @@ class AuthWindow:
 
         Log.info("Building login")
         self.build_login()
-        Log.info("Success!")
         Log.info("Building register")
         self.build_register()
-        Log.info("Success")
 
     def build_login(self):
         f = self.login_frame
@@ -402,7 +465,7 @@ class AuthWindow:
         self.reg_speed_label = tk.Label(f, text="5.0", bg="#111", fg="#eee", font=("Helvetica", 9, "bold"))
         self.reg_speed_label.pack()
         tk.Scale(f, from_=0.1, to=10.0, resolution=0.1, orient="horizontal", variable=self.reg_speed,
-                 bg="#111", fg="#e94560", troughcolor="#333", length=240, showvalue=0,
+                 bg="#111", fg="#e94560", troughcolor="#333", length=240, showvalue=False,
                  command=lambda v: self.reg_speed_label.config(text=f"{float(v):.1f}")).pack(pady=(0, 10))
         tk.Button(f, text="Register", bg="#2d6a4f", fg="#fff", command=self.register_user).pack(pady=10)
 
@@ -443,7 +506,6 @@ class AuthWindow:
         default_nick = self.reg_default_nick.get().strip() or user
         favorite_color = getattr(self, "reg_color", "#FF4444")
         default_speed = float(self.reg_speed.get())
-
         conn = sqlite3.connect(DB_NAME)
         c = conn.cursor()
         try:
@@ -470,7 +532,6 @@ class AuthWindow:
 
 
 # ================= MAIN MENU =================
-
 class MainMenuWindow:
     def __init__(self, root, username, on_play, on_leaderboard, on_logout):
         Log.info(f"Main menu init for user: {username}")
@@ -479,7 +540,6 @@ class MainMenuWindow:
         self.on_play = on_play
         self.on_leaderboard = on_leaderboard
         self.on_logout = on_logout
-
         try:
             for w in self.root.winfo_children():
                 w.destroy()
@@ -500,14 +560,11 @@ class MainMenuWindow:
                       **btn_style).pack(pady=8)
             tk.Button(self.root, text="Logout", bg="#444", fg="#fff", command=self._handle_logout,
                       **btn_style).pack(pady=8)
-
-            Log.info("Main menu created")
         except Exception as e:
             Log.error(f"Main menu creation error: {e}")
             messagebox.showerror("Error", f"Failed to create menu: {e}")
 
     def _handle_play(self):
-        Log.info(f"User {self.username} pressed Play")
         try:
             if callable(self.on_play):
                 self.on_play()
@@ -516,7 +573,6 @@ class MainMenuWindow:
             messagebox.showerror("Error", f"Failed to start game: {e}")
 
     def _handle_leaderboard(self):
-        Log.info(f"User {self.username} opened leaderboard")
         try:
             if callable(self.on_leaderboard):
                 self.on_leaderboard()
@@ -525,7 +581,6 @@ class MainMenuWindow:
             messagebox.showerror("Error", f"Failed to open leaderboard: {e}")
 
     def _handle_logout(self):
-        Log.info(f"User {self.username} logs out")
         try:
             if callable(self.on_logout):
                 self.on_logout()
@@ -535,7 +590,6 @@ class MainMenuWindow:
 
 
 # ================= LEADERBOARD UI =================
-
 class LeaderboardWindow:
     def __init__(self, parent):
         self.win = tk.Toplevel(parent)
@@ -574,7 +628,6 @@ class LeaderboardWindow:
         """)
         rows = c.fetchall()
         conn.close()
-
         for i, row in enumerate(rows, 1):
             user, score, is_bot, date = row
             bot_str = "Yes" if is_bot else "No"
@@ -582,100 +635,7 @@ class LeaderboardWindow:
             self.tree.insert("", "end", values=(i, user, score, bot_str, short_date))
 
 
-# ================= SETTINGS UI =================
-
-class KeybindSettings(tk.Toplevel):
-    def __init__(self, master, current_keybinds, on_save_callback):
-        super().__init__(master)
-        self.title("Controls setup (Player 1)")
-        self.geometry("320x420")
-        self.resizable(False, False)
-        self.configure(bg="#000")
-        self.transient(master)
-        self.grab_set()
-        self.on_save = on_save_callback
-        self.keybinds = current_keybinds.copy()
-        self.vars = {}
-        self.build_ui()
-
-    def build_ui(self):
-        tk.Label(self, text="Keybinds", bg="#000", fg="#e94560",
-                 font=("Helvetica", 16, "bold")).pack(pady=15)
-
-        container = tk.Frame(self, bg="#111")
-        container.pack(fill="both", expand=True, padx=15, pady=10)
-
-        actions = [
-            ("hard_drop", "Hard Drop"),
-            ("rotate", "Rotate"),
-            ("left", "Left"),
-            ("right", "Right"),
-            ("soft_drop", "Soft Drop"),
-            ("hold", "Hold"),
-        ]
-
-        for action, name in actions:
-            frame = tk.Frame(container, bg="#111")
-            frame.pack(fill="x", pady=5)
-            tk.Label(frame, text=name, bg="#111", fg="#eeeeee", font=("Helvetica", 11)).pack(side="left")
-            val = self.keybinds.get(action, "")
-            if isinstance(val, int):
-                try:
-                    val = pygame.key.name(val)
-                except Exception:
-                    val = str(val)
-            var = tk.StringVar(self, value=val)
-            self.vars[action] = var
-            btn = tk.Button(frame, textvariable=var, bg="#0f3460", fg="white", font=("Helvetica", 10),
-                            width=12, command=lambda v=var, a=action: self.record_key(v, a))
-            btn.pack(side="right")
-
-        btn_frame = tk.Frame(self, bg="#000")
-        btn_frame.pack(pady=15)
-        tk.Button(btn_frame, text="Save", bg="#0f3460", fg="white", font=("Helvetica", 10, "bold"),
-                  command=self.save_and_close).pack(side="left", padx=8)
-        tk.Button(btn_frame, text="Reset", bg="#444", fg="white", font=("Helvetica", 10, "bold"),
-                  command=self.reset_defaults).pack(side="left", padx=8)
-        tk.Button(btn_frame, text="Cancel", bg="#333", fg="white", font=("Helvetica", 10, "bold"),
-                  command=self.destroy).pack(side="left", padx=8)
-
-    def record_key(self, var, action):
-        var.set("Press...")
-
-        def on_key(event):
-            key_name = event.keysym.lower()
-            if key_name in ["shift_l", "shift_r"]:
-                key_name = "shift"
-            elif key_name in ["control_l", "control_r"]:
-                key_name = "ctrl"
-            elif key_name in ["alt_l", "alt_r"]:
-                key_name = "alt"
-            var.set(key_name)
-            self.keybinds[action] = key_name
-            self.unbind("<Key>")
-            self.master.focus_set()
-
-        self.bind("<Key>", on_key)
-        self.focus_set()
-
-    def reset_defaults(self):
-        defaults = {
-            "hard_drop": "q",
-            "rotate": "w",
-            "left": "a",
-            "right": "d",
-            "soft_drop": "s",
-            "hold": "e",
-        }
-        for action, val in defaults.items():
-            self.keybinds[action] = val
-            self.vars[action].set(val)
-
-    def save_and_close(self):
-        self.on_save(self.keybinds)
-        self.destroy()
-
-
+# ================= CUSTOM AI SETTINGS =================
 class CustomAISettings(tk.Toplevel):
     def __init__(self, master, current_config, on_save_callback):
         super().__init__(master)
@@ -696,26 +656,20 @@ class CustomAISettings(tk.Toplevel):
     def build_ui(self):
         tk.Label(self, text="Custom AI Heuristics", bg="#000", fg="#e94560",
                  font=("Helvetica", 16, "bold")).pack(pady=(10, 5))
-
         main = tk.Frame(self, bg="#111")
         main.pack(fill="both", expand=True, padx=10, pady=5)
-
         left = tk.LabelFrame(main, text="Parameters (values can be entered manually)",
                              bg="#111", fg="#e94560", font=("Helvetica", 11, "bold"), padx=10, pady=10)
         left.pack(side="left", fill="both", expand=True)
-
         sep = tk.Frame(main, bg="#111", width=50)
         sep.pack(side="left", fill="y", padx=8)
         tk.Label(sep, text="OR", bg="#111", fg="#e94560", font=("Helvetica", 11, "bold")).pack(pady=(15, 5))
         tk.Frame(sep, bg="#444", width=2).pack(fill="both", expand=True)
-
         right = tk.LabelFrame(main, text="Load saved models", bg="#111", fg="#e94560",
                               font=("Helvetica", 11, "bold"), padx=10, pady=10)
         right.pack(side="left", fill="both", expand=True)
-
         self._build_left_panel(left)
         self._build_right_panel(right)
-
         btn_frame = tk.Frame(self, bg="#000")
         btn_frame.pack(pady=10)
         tk.Button(btn_frame, text="Save & Apply", bg="#0f3460", fg="white", font=("Helvetica", 10, "bold"),
@@ -739,7 +693,6 @@ class CustomAISettings(tk.Toplevel):
             header = tk.Frame(frame, bg="#111")
             header.pack(fill="x")
             tk.Label(header, text=name, bg="#111", fg="#eeeeee", font=("Helvetica", 10, "bold")).pack(side="left")
-
             entry_var = tk.StringVar(self, value=f"{self.current_config.get(key, default_val):.3f}")
             self.entry_vars[key] = entry_var
             entry = tk.Entry(header, textvariable=entry_var, bg="#222", fg="white",
@@ -747,14 +700,12 @@ class CustomAISettings(tk.Toplevel):
             entry.pack(side="right")
             entry.bind("<Return>", lambda e, k=key: self._on_entry_commit(k))
             entry.bind("<FocusOut>", lambda e, k=key: self._on_entry_commit(k))
-
             var = tk.DoubleVar(self, value=self.current_config.get(key, default_val))
             self.weights[key] = var
-
             scale_frame = tk.Frame(frame, bg="#111")
             scale_frame.pack(fill="x", pady=(2, 0))
             tk.Scale(scale_frame, from_=-2.0, to=2.0, resolution=0.01, orient="horizontal",
-                     variable=var, bg="#111", fg="#e94560", troughcolor="#333", length=260, showvalue=0,
+                     variable=var, bg="#111", fg="#e94560", troughcolor="#333", length=260, showvalue=False,
                      command=lambda v, k=key: self._on_scale_change(k, v)).pack(side="left", fill="x", expand=True)
 
     def _build_right_panel(self, parent):
@@ -763,14 +714,12 @@ class CustomAISettings(tk.Toplevel):
         self.model_list = tk.Listbox(parent, height=14, bg="#222", fg="white",
                                      selectbackground="#0f3460", font=("Consolas", 9))
         self.model_list.pack(fill="both", expand=True, pady=(5, 8))
-
         list_btns = tk.Frame(parent, bg="#111")
         list_btns.pack(fill="x")
         tk.Button(list_btns, text="Refresh", bg="#444", fg="white", font=("Helvetica", 9, "bold"),
                   command=self.refresh_model_list).pack(side="left", padx=(0, 6))
         tk.Button(list_btns, text="Load selected", bg="#0f3460", fg="white", font=("Helvetica", 9, "bold"),
                   command=self.load_selected_model).pack(side="left")
-
         self.refresh_model_list()
 
     def _on_scale_change(self, key, value):
@@ -825,11 +774,8 @@ class CustomAISettings(tk.Toplevel):
 
     def reset_defaults(self):
         defaults = {
-            "height": -0.51,
-            "lines": 0.76,
-            "holes": -0.36,
-            "bumpiness": -0.18,
-            "well_depth": -0.15,
+            "height": -0.51, "lines": 0.76, "holes": -0.36,
+            "bumpiness": -0.18, "well_depth": -0.15,
         }
         for key, var in self.weights.items():
             val = defaults.get(key, 0.0)
@@ -843,7 +789,6 @@ class CustomAISettings(tk.Toplevel):
 
 
 # ================= SELF-LEARNING PROGRESS =================
-
 class SelfLearningProgress(tk.Toplevel):
     def __init__(self, parent, model_name: str, iterations: int, q: queue.Queue,
                  stop_event: threading.Event, on_finished=None, on_error=None):
@@ -908,7 +853,6 @@ class SelfLearningProgress(tk.Toplevel):
                         self.on_error()
                     messagebox.showerror("Self-Learning Error", entry.get("__error__", "Unknown error"))
                     return
-
                 self.status.config(text=f"Iteration {entry.get('iter', '?')}")
                 try:
                     time_val = float(entry.get("time", 0.0) or 0.0)
@@ -926,7 +870,6 @@ class SelfLearningProgress(tk.Toplevel):
 
 
 # ================= SETUP UI =================
-
 class TetrisSetup:
     def __init__(self, parent, username="Guest", profile=None):
         self.parent = parent
@@ -937,8 +880,8 @@ class TetrisSetup:
 
         self.root = tk.Toplevel(parent)
         self.root.title(f"Tetris MP - Setup ({self.current_user})")
-        self.root.geometry("1250x850")
-        self.root.minsize(900, 350)
+        self.root.geometry("1400x950")
+        self.root.minsize(1000, 400)
         self.root.resizable(True, True)
         self.root.configure(bg="#000")
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
@@ -959,6 +902,12 @@ class TetrisSetup:
         for i in range(1, 5):
             self.player_ai_type[i] = tk.StringVar(self.root, value="DeepSeek")
 
+        # --- НОВОЕ: индивидуальные настройки ввода для каждого игрока ---
+        self.player_input_types = {i: tk.StringVar(self.root, value="keyboard") for i in range(1, 5)}
+        self.player_gamepad_configs = {i: {"binds": DEFAULT_GAMEPAD_BINDS.copy(), "menu_bindings": {}} for i in range(1, 5)}
+        self.player_assigned_gamepads = {i: None for i in range(1, 5)}
+        self.player_keybinds = {i: DEFAULT_KEYBINDS[i].copy() for i in range(1, 5)}
+
         self.fall_speeds = {}
         self.nickname_entries = {}
         self.custom_ai_config = {}
@@ -967,6 +916,11 @@ class TetrisSetup:
         self.bot_checkboxes = {}
         self.ai_menus = {}
         self.speed_labels = {}
+        
+        # --- Ссылки на виджеты ввода ---
+        self.input_checkboxes = {}
+        self.input_gamepad_menus = {}
+        self.input_buttons = {}  # {player_id: {action: button_widget}}
 
         self.self_learning_iters = tk.StringVar(self.root, value="20")
         self.self_learning_ai = tk.StringVar(self.root, value="Custom")
@@ -984,17 +938,9 @@ class TetrisSetup:
         self.server_host_var = tk.StringVar(self.root, value="127.0.0.1")
         self.is_host_var = tk.BooleanVar(self.root, value=True)
 
-        self.dynamic_keybinds = {
-            "hard_drop": "q",
-            "rotate": "w",
-            "left": "a",
-            "right": "d",
-            "soft_drop": "s",
-            "hold": "e",
-        }
-
         self.setup_ui()
         self._apply_profile_to_player1()
+        self._update_all_input_buttons()
 
     def _on_mode_change(self, *args):
         self.on_game_mode_change()
@@ -1010,13 +956,11 @@ class TetrisSetup:
         else:
             self.room_name_container.pack_forget()
             self.host_join_frame.pack_forget()
-        self.update_keybind_button()
 
     def on_game_mode_change(self):
         mode = self.game_mode.get()
         for w in (self.room_name_container, self.ml_container, self.ts_container):
             w.pack_forget()
-
         if mode in ["lan", "global"]:
             self.room_name_container.pack(fill="x", pady=10, before=self.bottom_frame)
         elif mode == "self_learning":
@@ -1042,10 +986,10 @@ class TetrisSetup:
         top = tk.Frame(main, bg=self.colors["bg"])
         top.pack(fill="both", expand=True)
 
+        # --- Game Mode ---
         left = tk.LabelFrame(top, text="Game Mode", bg=self.colors["frame_bg"], fg=self.colors["text"],
                              font=("Helvetica", 12, "bold"), padx=20, pady=15)
         left.pack(side="left", fill="both", expand=True, padx=(0, 10))
-
         modes = [
             ("VS", "vs"),
             ("CO-OP", "coop"),
@@ -1058,10 +1002,10 @@ class TetrisSetup:
                            bg=self.colors["frame_bg"], fg=self.colors["text"],
                            selectcolor=self.colors["frame_bg"], font=("Helvetica", 11)).pack(anchor="w", pady=5)
 
+        # --- Connection ---
         connection_frame = tk.LabelFrame(top, text="Connection", bg=self.colors["frame_bg"], fg=self.colors["text"],
                                          font=("Helvetica", 12, "bold"), padx=20, pady=10)
         connection_frame.pack(side="left", fill="both", expand=True, padx=(10, 10))
-
         connection_modes = [
             ("Local game", "local"),
             ("LAN multiplayer", "lan"),
@@ -1080,6 +1024,7 @@ class TetrisSetup:
                        bg=self.colors["frame_bg"], fg=self.colors["text"],
                        selectcolor=self.colors["frame_bg"], font=("Helvetica", 10)).pack(anchor="w")
 
+        # --- Players Configuration ---
         right = tk.LabelFrame(top, text="Players Configuration", bg=self.colors["frame_bg"], fg=self.colors["text"],
                               font=("Helvetica", 12, "bold"), padx=15, pady=10)
         right.pack(side="right", fill="both", expand=True, padx=(10, 0))
@@ -1089,7 +1034,8 @@ class TetrisSetup:
             tk.Label(right, text=h, bg=self.colors["frame_bg"], fg=self.colors["accent"],
                      font=("Helvetica", 10, "bold")).grid(row=0, column=col, padx=5, pady=5)
 
-        ai_values = ["Qwen", "DeepSeek", "Custom", "Student"]
+        ai_values = ["Qwen", "DeepSeek", "ChatGPT", "Custom", "Student"]
+
         for p in range(1, 5):
             entry = tk.Entry(right, bg="#222", fg=self.colors["text"], width=10)
             entry.insert(0, f"Player{p}")
@@ -1115,7 +1061,7 @@ class TetrisSetup:
             self.fall_speeds[p] = speed_var
             scale = tk.Scale(speed_frame, from_=0.1, to=10.0, resolution=0.1, orient="horizontal",
                              variable=speed_var, bg=self.colors["frame_bg"], fg=self.colors["text"],
-                             length=80, showvalue=0,
+                             length=80, showvalue=False,
                              command=lambda v, pl=p: self.speed_labels[pl].config(text=f"{float(v):.1f}"))
             scale.set(5.0)
             scale.pack()
@@ -1134,6 +1080,49 @@ class TetrisSetup:
         for p in range(1, 5):
             self.update_player_state(p)
 
+        # --- НОВОЕ: Input Settings Table ---
+        input_frame = tk.LabelFrame(main, text="Input Settings", bg=self.colors["frame_bg"], fg=self.colors["text"],
+                                    font=("Helvetica", 12, "bold"), padx=15, pady=10)
+        input_frame.pack(fill="x", pady=(20, 0))
+
+        input_headers = ["Player", "Use Gamepad", "Gamepad", "Hold", "Rotate", "Left", "Right", "Hard Drop", "Soft Drop", "Menu/Start"]
+        for col, h in enumerate(input_headers):
+            tk.Label(input_frame, text=h, bg=self.colors["frame_bg"], fg=self.colors["accent"],
+                     font=("Helvetica", 9, "bold")).grid(row=0, column=col, padx=5, pady=5)
+
+        actions = ["hold", "rotate", "left", "right", "hard_drop", "soft_drop", "menu"]
+
+        for p in range(1, 5):
+            # Player label
+            tk.Label(input_frame, text=f"Player {p}", bg=self.colors["frame_bg"], fg=self.colors["text"],
+                     font=("Helvetica", 10, "bold")).grid(row=p, column=0, padx=5, pady=5)
+
+            # Use Gamepad checkbox
+            cb = tk.Checkbutton(input_frame, variable=self.player_input_types[p],
+                               onvalue="gamepad", offvalue="keyboard",
+                               bg=self.colors["frame_bg"],
+                               command=lambda pl=p: self._on_input_type_toggle(pl))
+            cb.grid(row=p, column=1, padx=5, pady=5)
+            self.input_checkboxes[p] = cb
+
+            # Gamepad selection dropdown
+            gp_var = tk.StringVar(self.root)
+            gp_menu = tk.OptionMenu(input_frame, gp_var, "No gamepad")
+            gp_menu.config(bg="#222", fg="white", width=15, state="disabled")
+            gp_menu.grid(row=p, column=2, padx=5, pady=5)
+            self.input_gamepad_menus[p] = (gp_var, gp_menu)
+
+            # Action buttons
+            self.input_buttons[p] = {}
+            for col_idx, action in enumerate(actions, start=3):
+                btn_text = self._get_button_text(p, action)
+                btn = tk.Button(input_frame, text=btn_text, bg="#0f3460", fg="white",
+                               font=("Helvetica", 8), width=10,
+                               command=lambda pl=p, act=action: self._on_input_button_click(pl, act))
+                btn.grid(row=p, column=col_idx, padx=3, pady=5)
+                self.input_buttons[p][action] = btn
+
+        # --- Room Name ---
         self.room_name_container = tk.Frame(main, bg=self.colors["bg"])
         tk.Label(self.room_name_container, text="Room name:", bg=self.colors["bg"], fg=self.colors["text"],
                  font=("Helvetica", 12, "bold")).pack(side="left", padx=5)
@@ -1146,6 +1135,7 @@ class TetrisSetup:
                                           bg="#222", fg=self.colors["text"], font=("Helvetica", 12), width=15)
         self.server_host_entry.pack(side="left", padx=5)
 
+        # --- Self-Learning ---
         self.ml_container = tk.Frame(main, bg=self.colors["bg"])
         tk.Label(self.ml_container, text="Iterations (-1 = inf, can use 10^10):", bg=self.colors["bg"],
                  fg=self.colors["text"], font=("Helvetica", 11)).pack(side="left", padx=5)
@@ -1162,17 +1152,16 @@ class TetrisSetup:
                  font=("Helvetica", 11)).pack(side="left", padx=(15, 5))
         tk.Entry(self.ml_container, textvariable=self.self_learning_tags, bg="#222", fg="white",
                  width=35).pack(side="left", padx=5)
-
         self.show_gameplay_var = tk.BooleanVar(self.root, value=False)
         tk.Checkbutton(self.ml_container, text="Show bot gameplay", variable=self.show_gameplay_var,
                        bg=self.colors["bg"], fg=self.colors["text"], selectcolor=self.colors["frame_bg"],
                        font=("Helvetica", 10)).pack(side="left", padx=10)
-
         self.start_from_zero_var = tk.BooleanVar(self.root, value=True)
         tk.Checkbutton(self.ml_container, text="Start from zero weights", variable=self.start_from_zero_var,
                        bg=self.colors["bg"], fg=self.colors["text"], selectcolor=self.colors["frame_bg"],
                        font=("Helvetica", 10)).pack(side="left", padx=10)
 
+        # --- Teacher-Student ---
         self.ts_container = tk.Frame(main, bg=self.colors["bg"])
         tk.Label(self.ts_container, text="Student delay (ticks):", bg=self.colors["bg"], fg=self.colors["text"],
                  font=("Helvetica", 11)).pack(side="left", padx=5)
@@ -1183,6 +1172,7 @@ class TetrisSetup:
         tk.Entry(self.ts_container, textvariable=self.teacher_student_tags, bg="#222", fg="white",
                  width=40).pack(side="left", padx=5)
 
+        # --- Bottom Controls ---
         self.bottom_frame = tk.LabelFrame(main, text="Controls", bg=self.colors["frame_bg"], fg=self.colors["text"],
                                           font=("Helvetica", 12, "bold"), padx=20, pady=15)
         self.bottom_frame.pack(fill="x", pady=(20, 0))
@@ -1201,16 +1191,335 @@ class TetrisSetup:
                   command=self.show_leaderboard, **style).pack(side="left", padx=5)
         tk.Button(btn_frame, text="Custom AI", bg="#533483", fg="white",
                   command=self.open_custom_ai_settings, **style).pack(side="left", padx=5)
-
-        self.keybind_btn = tk.Button(btn_frame, text="Configure keys", bg="#533483", fg="white",
-                                     command=self.open_keybind_settings, **style)
-        self.keybind_btn.pack(side="left", padx=5)
-
         tk.Button(btn_frame, text="Exit", bg="#dc3545", fg="white",
                   command=self.exit_game, **style).pack(side="left", padx=5)
 
         self.on_game_mode_change()
         self.on_network_mode_change()
+
+    def _get_button_text(self, player_id: int, action: str) -> str:
+        """Получить текст для кнопки ввода"""
+        if self.player_input_types[player_id].get() == "keyboard":
+            return self.player_keybinds[player_id].get(action, "?")
+        else:
+            config = self.player_gamepad_configs[player_id]
+            if action == "menu":
+                menu_bindings = config.get("menu_bindings", {})
+                if menu_bindings:
+                    guid, value = next(iter(menu_bindings.items()))
+                    return f"Start ({value})"
+                return "Set Start"
+            bind = config.get("binds", {}).get(action, {})
+            if bind.get("type") == "button":
+                return f"Btn {bind.get('value', '?')}"
+            elif bind.get("type") == "axis":
+                axis = bind.get("axis", "?")
+                direction = "+" if bind.get("direction", 1) > 0 else "-"
+                return f"Axis {axis}{direction}"
+            elif bind.get("type") == "hat":
+                hat = bind.get("hat", "?")
+                direction = tuple(bind.get("direction", (0, 0)))
+                names = {(-1, 0): "Left", (1, 0): "Right", (0, 1): "Up", (0, -1): "Down"}
+                return f"DPad {names.get(direction, direction)}"
+            return "?"
+
+    def _on_input_type_toggle(self, player_id: int):
+        """Обработка переключения чекбокса Use Gamepad"""
+        input_type = self.player_input_types[player_id].get()
+        
+        if input_type == "gamepad":
+            # Проверить наличие геймпадов
+            available = self._get_available_gamepads()
+            if not available:
+                messagebox.showwarning(
+                    "No Gamepads",
+                    "No gamepads detected.\n\n"
+                    "Gamepad input has been disabled; keyboard input will be used.",
+                    parent=self.root,
+                )
+                self.player_input_types[player_id].set("keyboard")
+                self.player_assigned_gamepads[player_id] = None
+                self._update_input_row(player_id)
+                return
+            
+            # Обновить список геймпадов в dropdown
+            self._update_gamepad_dropdown(player_id)
+        
+        self._update_input_row(player_id)
+
+    def _set_player_gamepad(self, player_id: int, gamepad_index: int):
+        """Назначить выбранный геймпад игроку и предупредить о совместном использовании."""
+        available = self._get_available_gamepads()
+        if not (0 <= gamepad_index < len(available)):
+            self.player_assigned_gamepads[player_id] = None
+            return
+        self.player_assigned_gamepads[player_id] = gamepad_index
+        gp_name = available[gamepad_index]["name"]
+        other_players = [
+            p for p in range(1, 5)
+            if p != player_id and self.player_enabled[p].get()
+            and self.player_input_types[p].get() == "gamepad"
+            and self.player_assigned_gamepads.get(p) == gamepad_index
+        ]
+        if other_players:
+            messagebox.showwarning(
+                "Gamepad assigned to multiple players",
+                f"Gamepad \"{gp_name}\" is already assigned to Player {other_players[0]}.\n\n"
+                f"It is now also assigned to Player {player_id}.\n"
+                "Both players will receive input from the same gamepad.",
+                parent=self.root,
+            )
+        self._update_all_input_buttons()
+
+    def _update_gamepad_dropdown(self, player_id: int):
+        """Обновить dropdown с доступными геймпадами"""
+        gp_var, gp_menu = self.input_gamepad_menus[player_id]
+        available = self._get_available_gamepads()
+        
+        if not available:
+            gp_var.set("No gamepad")
+            gp_menu.config(state="disabled")
+            return
+        
+        gp_names = [f"{gp['name']}" for gp in available]
+        
+        # Пересоздать меню
+        gp_menu['menu'].delete(0, 'end')
+        for idx, name in enumerate(gp_names):
+            gp_menu['menu'].add_command(
+                label=name,
+                command=lambda i=idx: (gp_var.set(gp_names[i]), self._set_player_gamepad(player_id, i)),
+            )
+        
+        # Установить текущий геймпад
+        current_idx = self.player_assigned_gamepads[player_id]
+        if current_idx is not None and 0 <= current_idx < len(available):
+            gp_var.set(gp_names[current_idx])
+        else:
+            gp_var.set(gp_names[0])
+            self.player_assigned_gamepads[player_id] = 0
+        
+        gp_menu.config(state="normal")
+
+    def _update_input_row(self, player_id: int):
+        """Обновить состояние виджетов в строке игрока"""
+        input_type = self.player_input_types[player_id].get()
+        gp_var, gp_menu = self.input_gamepad_menus[player_id]
+        available = self._get_available_gamepads()
+        if not available:
+            self.player_input_types[player_id].set("keyboard")
+            self.player_assigned_gamepads[player_id] = None
+            input_type = "keyboard"
+            self.input_checkboxes[player_id].config(state="disabled")
+        else:
+            self.input_checkboxes[player_id].config(state="normal")
+        
+        if input_type == "keyboard":
+            # Клавиатура: кнопки активны, dropdown отключен
+            gp_menu.config(state="disabled")
+            for action, btn in self.input_buttons[player_id].items():
+                btn.config(state="normal", text=self._get_button_text(player_id, action))
+        else:
+            # Геймпад: кнопки активны (для записи), dropdown активен
+            gp_menu.config(state="normal")
+            for action, btn in self.input_buttons[player_id].items():
+                btn.config(state="normal", text=self._get_button_text(player_id, action))
+
+    def _update_all_input_buttons(self):
+        """Обновить все кнопки ввода"""
+        for p in range(1, 5):
+            self._update_input_row(p)
+
+    def _on_input_button_click(self, player_id: int, action: str):
+        """Обработка клика по кнопке ввода"""
+        input_type = self.player_input_types[player_id].get()
+        
+        if input_type == "keyboard":
+            self._record_keyboard_input(player_id, action)
+        else:
+            self._record_gamepad_input(player_id, action)
+
+    def _record_keyboard_input(self, player_id: int, action: str):
+        """Запись клавиши"""
+        btn = self.input_buttons[player_id][action]
+        original_text = btn.cget("text")
+        btn.config(text="Press key...", state="disabled")
+        self.root.update()
+        
+        def on_key(event):
+            key_name = event.keysym.lower()
+            if key_name in ["shift_l", "shift_r"]:
+                key_name = "shift"
+            elif key_name in ["control_l", "control_r"]:
+                key_name = "ctrl"
+            elif key_name in ["alt_l", "alt_r"]:
+                key_name = "alt"
+            
+            self.player_keybinds[player_id][action] = key_name
+            btn.config(text=key_name, state="normal")
+            self.root.unbind("<Key>")
+            Log.info(f"Player {player_id} {action} -> {key_name}")
+        
+        self.root.bind("<Key>", on_key)
+        self.root.focus_set()
+
+    def _ensure_pygame_input_ready(self):
+        """Инициализировать SDL-подсистемы, необходимые для чтения геймпада из Tkinter."""
+        try:
+            if not pygame.display.get_init():
+                pygame.display.init()
+            if not pygame.joystick.get_init():
+                pygame.joystick.init()
+            return True
+        except Exception as e:
+            Log.error(f"Pygame input subsystem init error: {e}")
+            return False
+
+    def _record_gamepad_input(self, player_id: int, action: str):
+        """Запись кнопки геймпада"""
+        available = self._get_available_gamepads()
+        if not available:
+            messagebox.showwarning("No Gamepads", "No gamepads detected!", parent=self.root)
+            return
+        
+        btn = self.input_buttons[player_id][action]
+        original_text = btn.cget("text")
+        btn.config(text="Press button...", state="disabled")
+        self.root.update()
+        
+        # Получить индекс геймпада
+        gp_var, _ = self.input_gamepad_menus[player_id]
+        gp_name = gp_var.get()
+        gp_idx = None
+        for idx, gp in enumerate(available):
+            if gp["name"] == gp_name:
+                gp_idx = idx
+                break
+        
+        if gp_idx is None:
+            gp_idx = 0
+        
+        self.player_assigned_gamepads[player_id] = gp_idx
+        
+        # Снять исходное состояние всех элементов управления.
+        # Это важно: многие контроллеры держат триггеры/оси не в нуле
+        # (например, Axis 4 может покоиться на -1), поэтому нельзя
+        # считать любое значение оси > threshold нажатием.
+        try:
+            # SDL event subsystem must be initialized before event.pump().
+            if not self._ensure_pygame_input_ready():
+                btn.config(text="Error", state="normal")
+                return
+            pygame.event.pump()
+            joy = pygame.joystick.Joystick(available[gp_idx]["index"])
+            if not joy.get_init():
+                joy.init()
+            self._gamepad_bind_capture = {
+                "player": player_id,
+                "action": action,
+                "gp_idx": gp_idx,
+                "buttons": [bool(joy.get_button(i)) for i in range(joy.get_numbuttons())],
+                "axes": [float(joy.get_axis(i)) for i in range(joy.get_numaxes())],
+                "hats": [tuple(joy.get_hat(i)) for i in range(joy.get_numhats())],
+            }
+        except Exception as e:
+            Log.error(f"Gamepad capture init error: {e}")
+            btn.config(text="Error", state="normal")
+            return
+
+        self._poll_gamepad_for_bind(player_id, action, gp_idx, btn)
+
+    def _poll_gamepad_for_bind(self, player_id: int, action: str, gp_idx: int, btn):
+        """Захват ввода геймпада без ложных осей; поддерживает buttons, hats и axes."""
+        available = self._get_available_gamepads()
+        if gp_idx >= len(available):
+            btn.config(text="Error", state="normal")
+            return
+
+        try:
+            # Tkinter обслуживает свой event loop, поэтому SDL нужно явно прокачивать.
+            if not self._ensure_pygame_input_ready():
+                self._gamepad_bind_capture = None
+                btn.config(text="Error", state="normal")
+                return
+            pygame.event.pump()
+            joy = pygame.joystick.Joystick(available[gp_idx]["index"])
+            if not joy.get_init():
+                joy.init()
+
+            capture = getattr(self, "_gamepad_bind_capture", None)
+            if not capture or capture.get("player") != player_id or capture.get("action") != action:
+                return
+
+            # Обычные кнопки: принимаем только переход released -> pressed.
+            old_buttons = capture.get("buttons", [])
+            for btn_idx in range(joy.get_numbuttons()):
+                pressed = bool(joy.get_button(btn_idx))
+                was_pressed = old_buttons[btn_idx] if btn_idx < len(old_buttons) else False
+                if pressed and not was_pressed:
+                    if action == "menu":
+                        guid = str(available[gp_idx].get("guid", available[gp_idx].get("id", gp_idx)))
+                        self.player_gamepad_configs[player_id].setdefault("menu_bindings", {})[guid] = btn_idx
+                        btn.config(text=f"Start ({btn_idx})", state="normal")
+                        Log.info(f"Player {player_id} menu/start -> Button {btn_idx} for GUID {guid}")
+                    else:
+                        self.player_gamepad_configs[player_id].setdefault("binds", {})[action] = {
+                            "type": "button", "value": btn_idx
+                        }
+                        btn.config(text=f"Btn {btn_idx}", state="normal")
+                        Log.info(f"Player {player_id} {action} -> Button {btn_idx}")
+                    self._gamepad_bind_capture = None
+                    return
+
+            # Menu/Start — только физическая кнопка. HAT/axis для него не принимаем.
+            if action == "menu":
+                capture["buttons"] = [bool(joy.get_button(i)) for i in range(joy.get_numbuttons())]
+                self.root.after(50, lambda: self._poll_gamepad_for_bind(player_id, action, gp_idx, btn))
+                return
+
+            # D-pad у большинства XInput/DirectInput контроллеров приходит как HAT.
+            old_hats = capture.get("hats", [])
+            for hat_idx in range(joy.get_numhats()):
+                hat = tuple(joy.get_hat(hat_idx))
+                old_hat = tuple(old_hats[hat_idx]) if hat_idx < len(old_hats) else (0, 0)
+                if hat != (0, 0) and hat != old_hat:
+                    self.player_gamepad_configs[player_id].setdefault("binds", {})[action] = {
+                        "type": "hat", "hat": hat_idx, "direction": list(hat)
+                    }
+                    btn.config(text=f"DPad {hat}", state="normal")
+                    Log.info(f"Player {player_id} {action} -> HAT {hat_idx} {hat}")
+                    self._gamepad_bind_capture = None
+                    return
+
+            # Оси/курки: сравниваем с исходным состоянием, а не с нулём.
+            # Поэтому покоящийся trigger/axis не превращается в "Axis 4-".
+            old_axes = capture.get("axes", [])
+            for axis_idx in range(joy.get_numaxes()):
+                axis_val = float(joy.get_axis(axis_idx))
+                baseline = float(old_axes[axis_idx]) if axis_idx < len(old_axes) else 0.0
+                if abs(axis_val - baseline) >= GAMEPAD_AXIS_THRESHOLD:
+                    delta = axis_val - baseline
+                    direction = 1 if delta > 0 else -1
+                    self.player_gamepad_configs[player_id].setdefault("binds", {})[action] = {
+                        "type": "axis", "axis": axis_idx, "direction": direction
+                    }
+                    dir_str = "+" if direction > 0 else "-"
+                    btn.config(text=f"Axis {axis_idx}{dir_str}", state="normal")
+                    Log.info(f"Player {player_id} {action} -> Axis {axis_idx}{dir_str}")
+                    self._gamepad_bind_capture = None
+                    return
+
+            # Обновляем baseline кнопок/hat'ов, но не осей: ось должна сравниваться
+            # с состоянием на момент начала назначения, иначе медленный дрейф может
+            # незаметно стать новым baseline.
+            capture["buttons"] = [bool(joy.get_button(i)) for i in range(joy.get_numbuttons())]
+            capture["hats"] = [tuple(joy.get_hat(i)) for i in range(joy.get_numhats())]
+            self.root.after(50, lambda: self._poll_gamepad_for_bind(player_id, action, gp_idx, btn))
+
+        except Exception as e:
+            Log.error(f"Gamepad poll error: {e}")
+            self._gamepad_bind_capture = None
+            btn.config(text="Error", state="normal")
 
     def _apply_profile_to_player1(self):
         if not self.profile:
@@ -1235,28 +1544,15 @@ class TetrisSetup:
         is_enabled = self.player_enabled[player].get()
         is_bot = self.player_is_bot[player].get()
         state = "normal" if is_enabled else "disabled"
-
         self.color_buttons[player].config(state=state)
         self.speed_scales[player].config(state=state)
         self.nickname_entries[player].config(state=state)
         self.speed_labels[player].config(state=state)
         self.bot_checkboxes[player].config(state=state)
-
         if is_enabled and is_bot:
             self.ai_menus[player].config(state="normal")
         else:
             self.ai_menus[player].config(state="disabled")
-
-        self.update_keybind_button()
-
-    def update_keybind_button(self):
-        enabled_players = sum(1 for p in range(1, 5) if self.player_enabled[p].get())
-        if self.network_mode.get() in ["lan", "online"] and enabled_players > 1:
-            if hasattr(self, "keybind_btn"):
-                self.keybind_btn.config(state="disabled")
-        else:
-            if hasattr(self, "keybind_btn"):
-                self.keybind_btn.config(state="normal")
 
     def choose_color(self, player):
         color = colorchooser.askcolor(title=f"Player {player} color", color=self.player_colors[player],
@@ -1265,12 +1561,25 @@ class TetrisSetup:
             self.player_colors[player] = color[1]
             self.color_buttons[player].config(bg=color[1])
 
-    def open_keybind_settings(self):
-        KeybindSettings(self.root, self.dynamic_keybinds, self.apply_keybinds)
-
-    def apply_keybinds(self, keybinds):
-        self.dynamic_keybinds = keybinds
-        Log.info(f"Player 1 keybinds updated: {keybinds}")
+    def _get_available_gamepads(self) -> list:
+        """Получение списка доступных геймпадов"""
+        try:
+            pygame.joystick.init()
+            gamepads = []
+            for i in range(pygame.joystick.get_count()):
+                joy = pygame.joystick.Joystick(i)
+                if not joy.get_init():
+                    joy.init()
+                gamepads.append({
+                    "index": i,
+                    "name": joy.get_name(),
+                    "id": joy.get_instance_id(),
+                    "guid": joy.get_guid(),
+                })
+            return gamepads
+        except Exception as e:
+            Log.error(f"Failed to get gamepads: {e}")
+            return []
 
     def get_settings(self):
         players = {}
@@ -1287,6 +1596,10 @@ class TetrisSetup:
                     "is_bot": is_bot,
                     "ai_type": ai_type,
                     "ai_config": ai_config,
+                    "input_type": self.player_input_types[p].get(),
+                    "gamepad_config": self.player_gamepad_configs.get(p, {}),
+                    "assigned_gamepad": self.player_assigned_gamepads.get(p),
+                    "keybinds": self.player_keybinds.get(p, {}),
                 }
 
         settings = {
@@ -1304,21 +1617,18 @@ class TetrisSetup:
             "start_from_zero": self.start_from_zero_var.get(),
         }
 
-        enabled_players = sum(1 for p in range(1, 5) if self.player_enabled[p].get())
-
         if self.network_mode.get() in ["lan", "online"]:
             settings["network_mode"] = self.network_mode.get()
             settings["room_name"] = self.room_name_var.get().strip() or "tetris_room"
             settings["server_port"] = 8888
             settings["is_host"] = self.is_host_var.get()
             settings["server_host"] = self.server_host_var.get().strip() or "127.0.0.1"
-            if enabled_players > 1:
-                settings["dynamic_keymap"] = {}
-            else:
-                settings["dynamic_keymap"] = {1: self.dynamic_keybinds}
-        else:
-            settings["network_mode"] = "local"
-            settings["dynamic_keymap"] = {1: self.dynamic_keybinds}
+
+        settings["dynamic_keymap"] = {
+            p: self.player_keybinds[p]
+            for p in range(1, 5)
+            if self.player_enabled[p].get()
+        }
 
         return settings
 
@@ -1337,6 +1647,49 @@ class TetrisSetup:
             messagebox.showwarning("No players", "Enable at least one player!")
             return
 
+        # Проверка геймпадов для тех, кто их выбрал
+        gamepad_players = [
+            p for p, pdata in settings["players"].items()
+            if pdata.get("input_type") == "gamepad"
+        ]
+        if gamepad_players:
+            available = self._get_available_gamepads()
+            if not available:
+                messagebox.showerror(
+                    "No Gamepads",
+                    f"Players {gamepad_players} require gamepads, but none detected!\n\n"
+                    f"Connect gamepads or switch these players to keyboard.",
+                )
+                return
+
+            assignments = {}
+            for p in gamepad_players:
+                gp_idx = settings["players"][p].get("assigned_gamepad")
+                if gp_idx is None or not (0 <= gp_idx < len(available)):
+                    messagebox.showerror(
+                        "Gamepad is not assigned",
+                        f"Player {p} has Gamepad enabled, but no valid gamepad is assigned.\n\n"
+                        "Select a gamepad for this player or switch to keyboard.",
+                        parent=self.root,
+                    )
+                    return
+                assignments.setdefault(gp_idx, []).append(p)
+
+            shared = {idx: players for idx, players in assignments.items() if len(players) >= 2}
+            if shared:
+                details = [
+                    f"{available[idx]['name']} -> Players {', '.join(map(str, players))}"
+                    for idx, players in shared.items()
+                ]
+                if not messagebox.askyesno(
+                    "Gamepad assigned to multiple players",
+                    "The same gamepad is assigned to multiple players:\n\n"
+                    + "\n".join(details)
+                    + "\n\nBoth players will receive input from this gamepad.\n\nContinue?",
+                    parent=self.root,
+                ):
+                    return
+
         if settings["game_mode"] == "self_learning":
             self.run_self_learning(settings)
             return
@@ -1346,8 +1699,13 @@ class TetrisSetup:
         try:
             game = Game(settings)
             game.run()
+            try:
+                record_game_results(game, settings.get("current_user", self.current_user))
+            except Exception as e:
+                Log.error(f"Leaderboard save error: {e}")
         except Exception as e:
             Log.error(f"Critical game error: {e}")
+            messagebox.showerror("Game Error", f"Failed to start game:\n{e}")
         finally:
             if settings["game_mode"] == "teacher_student" and game is not None:
                 try:
@@ -1363,23 +1721,19 @@ class TetrisSetup:
         if self.self_learning_running:
             messagebox.showinfo("Self-Learning", "Learning already running.")
             return
-
         try:
             ai_type = str(settings.get("self_learning_ai", "custom")).lower()
             iterations = parse_iterations(settings.get("self_learning_iters", 20))
-
             if ai_type == "custom":
                 base_config = dict(settings.get("custom_ai_config") or DEFAULT_AI_PARAMS)
             else:
                 base_config = dict(AI_PRESETS.get(ai_type, DEFAULT_AI_PARAMS))
-
             default_name = settings.get("self_learning_model_name") or f"{self.current_user}_selfAI"
             model_name = ask_model_name(parent=self.root, title="Self-Learning",
                                         label="Model name to save:", default_name=default_name)
             if not model_name:
                 Log.info("Self-learning cancelled: user did not set model name.")
                 return
-
             stop_event = threading.Event()
             self.self_learning_stop_event = stop_event
             q = queue.Queue()
@@ -1414,7 +1768,6 @@ class TetrisSetup:
 
             if show_gameplay:
                 viewer = GameplayViewer(self.root, WIDTH, HEIGHT, cell_size=18)
-
                 def poll_viewer():
                     if viewer is None or getattr(viewer, "_closed", True):
                         return
@@ -1427,7 +1780,6 @@ class TetrisSetup:
                         pass
                     if not getattr(viewer, "_closed", True):
                         viewer.after(33, poll_viewer)
-
                 viewer.after(100, poll_viewer)
 
             engine = SelfLearningEngine(
@@ -1463,7 +1815,6 @@ class TetrisSetup:
 
             self.self_learning_running = True
             threading.Thread(target=worker, daemon=True).start()
-
             SelfLearningProgress(
                 parent=self.root,
                 model_name=model_name,
@@ -1486,21 +1837,17 @@ class TetrisSetup:
             if not result:
                 messagebox.showwarning("Self-Learning", "No result to save.")
                 return
-
             tags = normalize_tags(settings.get("self_learning_tags", []))
             tags.extend([ai_type, "self-learning"])
             iterations = parse_iterations(settings.get("self_learning_iters", 20))
             if iterations < 0:
                 tags.append("infinite")
-
             best_weights = result.get("best_weights") or {}
             save_custom_alg_model(name=model_name, params=best_weights, tags=tags)
-
             best_score = result.get("best_score", 0)
             if best_score < 0:
                 best_score = 0
             iterations_done = result.get("iterations_done", len(result.get("stats", [])))
-
             messagebox.showinfo(
                 "Self-Learning",
                 f"Training completed.\n\n"
@@ -1517,25 +1864,21 @@ class TetrisSetup:
     def save_teacher_student_model(self, game, settings):
         teacher = next((p for p in game.players if p.id == 1), None)
         student = next((p for p in game.players if p.id == 2), None)
-
         if teacher is None:
             Log.warning("Teacher-student: teacher not found, model not saved.")
             return
-
         try:
             self.root.deiconify()
             self.root.lift()
             self.root.update_idletasks()
         except Exception:
             pass
-
         default_name = f"{teacher.nickname}_teachingAI"
         model_name = ask_model_name(parent=self.root, title="Teacher-Student",
                                     label="Model name to save:", default_name=default_name)
         if not model_name:
             Log.warning("Teacher-student: user cancelled model save.")
             return
-
         params = None
         if student and getattr(student, "bot", None):
             if hasattr(student.bot, "export_learned_weights"):
@@ -1543,17 +1886,13 @@ class TetrisSetup:
                     params = student.bot.export_learned_weights()
                 except Exception as e:
                     Log.error(f"Student weights export error: {e}")
-
         if not params:
             params = settings.get("custom_ai_config") or DEFAULT_AI_PARAMS.copy()
-
         tags = normalize_tags(settings.get("teacher_student_tags", []))
         tags.extend(["teacher-student", teacher.nickname])
-
         if student is not None:
             tags.append(f"student_score_{student.board.score}")
             tags.append(f"student_lines_{student.board.lines_cleared_total}")
-
         try:
             save_custom_alg_model(name=model_name, params=params, tags=tags)
             Log.info(f"Teacher-student model saved: {model_name}")
@@ -1566,8 +1905,18 @@ class TetrisSetup:
         file = filedialog.asksaveasfilename(defaultextension=".json",
                                             filetypes=[("JSON files", "*.json")], parent=self.root)
         if file:
+            data = self.get_settings()
+            data["input_settings"] = {
+                str(p): {
+                    "input_type": self.player_input_types[p].get(),
+                    "gamepad_config": self.player_gamepad_configs.get(p, {}),
+                    "assigned_gamepad": self.player_assigned_gamepads.get(p),
+                    "keybinds": self.player_keybinds.get(p, {}),
+                }
+                for p in range(1, 5)
+            }
             with open(file, "w", encoding="utf-8") as f:
-                json.dump(self.get_settings(), f, indent=2, ensure_ascii=False)
+                json.dump(data, f, indent=2, ensure_ascii=False)
 
     def load_settings(self):
         file = filedialog.askopenfilename(filetypes=[("JSON files", "*.json")], parent=self.root)
@@ -1576,14 +1925,11 @@ class TetrisSetup:
         try:
             with open(file, "r", encoding="utf-8") as f:
                 data = json.load(f)
-
             Log.info("Settings file loaded.")
 
             self.game_mode.set(data.get("game_mode", "vs"))
             if "custom_ai_config" in data:
                 self.custom_ai_config = data["custom_ai_config"]
-            if "dynamic_keymap" in data and 1 in data["dynamic_keymap"]:
-                self.dynamic_keybinds = data["dynamic_keymap"][1]
             if "server_host" in data:
                 self.server_host_var.set(data["server_host"])
             if "room_name" in data:
@@ -1602,13 +1948,36 @@ class TetrisSetup:
             if "teacher_student_tags" in data:
                 self.teacher_student_tags.set(",".join(normalize_tags(data["teacher_student_tags"])))
 
+            # Загрузка настроек ввода
+            if "input_settings" in data:
+                for p_str, idata in data["input_settings"].items():
+                    try:
+                        p = int(p_str)
+                        if 1 <= p <= 4:
+                            self.player_input_types[p].set(idata.get("input_type", "keyboard"))
+                            self.player_gamepad_configs[p] = idata.get("gamepad_config", {"binds": DEFAULT_GAMEPAD_BINDS.copy()})
+                            self.player_assigned_gamepads[p] = idata.get("assigned_gamepad")
+                            if "keybinds" in idata:
+                                self.player_keybinds[p] = idata["keybinds"]
+                    except Exception:
+                        pass
+
+            if "dynamic_keymap" in data:
+                for p_str, binds in data["dynamic_keymap"].items():
+                    try:
+                        p = int(p_str)
+                        if 1 <= p <= 4:
+                            self.player_keybinds[p] = binds
+                    except Exception:
+                        pass
+
             ai_mapping = {
                 "qwen": "Qwen",
                 "deepseek": "DeepSeek",
+                "chatgpt": "ChatGPT",
                 "custom": "Custom",
                 "student": "Student",
             }
-
             for p_str, pdata in data.get("players", {}).items():
                 p = int(p_str)
                 if 1 <= p <= 4:
@@ -1627,6 +1996,14 @@ class TetrisSetup:
                         ai_val = str(pdata.get("ai_type", "")).lower()
                         if ai_val in ai_mapping:
                             self.player_ai_type[p].set(ai_mapping[ai_val])
+                    if "input_type" in pdata:
+                        self.player_input_types[p].set(pdata.get("input_type", "keyboard"))
+                    if "gamepad_config" in pdata:
+                        self.player_gamepad_configs[p] = pdata.get("gamepad_config", {"binds": DEFAULT_GAMEPAD_BINDS.copy()})
+                    if "assigned_gamepad" in pdata:
+                        self.player_assigned_gamepads[p] = pdata.get("assigned_gamepad")
+                    if "keybinds" in pdata:
+                        self.player_keybinds[p] = pdata.get("keybinds")
         except Exception as e:
             Log.error(f"Settings load error: {e}")
             messagebox.showerror("Load Error", str(e))
@@ -1636,6 +2013,7 @@ class TetrisSetup:
             self.update_player_state(p)
         self.on_game_mode_change()
         self.on_network_mode_change()
+        self._update_all_input_buttons()
         Log.info("Settings applied to UI.")
 
     def exit_game(self):
@@ -1658,6 +2036,7 @@ class TetrisSetup:
         self.root.mainloop()
 
 
+# ================= GAMEPLAY VIEWER =================
 class GameplayViewer(tk.Toplevel):
     def __init__(self, parent, width=15, height=30, cell_size=18):
         super().__init__(parent)
@@ -1671,7 +2050,7 @@ class GameplayViewer(tk.Toplevel):
         canvas_h = height * cell_size
         self.canvas = tk.Canvas(self, width=canvas_w, height=canvas_h, bg="#1a1a1a", highlightthickness=0)
         self.canvas.pack(padx=10, pady=10)
-        self.info_label = tk.Label(self, text=" ", bg="#111", fg="#00ff88", font=("Consolas", 10))
+        self.info_label = tk.Label(self, text="", bg="#111", fg="#00ff88", font=("Consolas", 10))
         self.info_label.pack(pady=(0, 8))
         self._closed = False
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -1720,14 +2099,13 @@ class GameplayViewer(tk.Toplevel):
 
 
 # ================= APP CONTROLLER =================
-
 class App:
     def __init__(self):
         self.root = tk.Tk()
         self.root.geometry("430x640")
         self.root.configure(bg="#111")
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
-        self.current_user = None
+        self.current_user: str = ""
         self.current_profile = None
 
         Log.info("Showing auth window")
@@ -1769,7 +2147,7 @@ class App:
 
     def logout(self):
         Log.info(f"User {self.current_user} logged out")
-        self.current_user = None
+        self.current_user = ""
         self.current_profile = None
         self.show_auth()
 
@@ -1787,7 +2165,6 @@ class App:
 
 
 # ================= MAIN EXECUTION =================
-
 if __name__ == "__main__":
     init_db()
     app = App()
